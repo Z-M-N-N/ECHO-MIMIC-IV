@@ -1,0 +1,47 @@
+# VideoMAE (frozen) + MLP regression head
+seed: 42
+csv: /home/mzhao/ECHO-MIMIC-IV/data/regression.csv
+
+tasks:
+  - reg_lvef
+  - reg_la_4ch_length
+  - reg_ra_length
+  - reg_la_vol
+  - reg_biplane_lvedv
+  - reg_biplane_lvesv
+
+encoder:
+  # task.txt 里写的是 VideoMAE_pth/pytorch_model.bin，但实际权重位于上一级目录
+  weights: /home/mzhao/模型权重/VideoMAE/pytorch_model.bin
+  num_frames: 16          # VideoMAE 预训练使用 16 帧
+  image_size: 224
+  pooling: mean           # mean | max | mean_std
+  batch_size: 16
+  num_workers: 8
+  amp_dtype: bfloat16
+
+feature:
+  dir: /home/mzhao/ECHO-MIMIC-IV/out/features/videomae
+  tag: null               # null -> videomae_16f_224px_mean
+
+head:
+  hidden_dims: [512, 256]
+  dropout: 0.2
+  activation: gelu
+  input_norm: true
+
+train:
+  batch_size: 128
+  epochs: 200
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  loss: mse               # mse | huber
+  huber_delta: 1.0
+  lr_scheduler: cosine    # cosine | plateau | none
+  patience: 25
+  min_delta: 1.0e-5
+  grad_clip: 5.0
+
+output:
+  root: /home/mzhao/ECHO-MIMIC-IV/out
+  run_name: videomae_mlp

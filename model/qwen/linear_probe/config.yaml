@@ -1,0 +1,48 @@
+# Qwen2.5-VL-3B frozen vision tower + MLP regression head
+seed: 42
+csv: /home/mzhao/ECHO-MIMIC-IV/data/regression.csv
+
+tasks:
+  - reg_lvef
+  - reg_la_4ch_length
+  - reg_ra_length
+  - reg_la_vol
+  - reg_biplane_lvedv
+  - reg_biplane_lvesv
+
+encoder:
+  model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
+  vision_tower_only: true      # 只加载 visual.*，不加载语言模型
+  num_frames: 8                # 需为偶数（temporal_patch_size=2）
+  image_size: 224              # 需为 28 的倍数
+  pooling: mean                # mean | max | mean_std
+  dtype: bfloat16
+  attn_implementation: sdpa
+  batch_size: 4
+  num_workers: 8
+
+feature:
+  dir: /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_linear_probe
+  tag: null                    # null -> qwen2vl3b_8f_224px_mean_frozen
+
+head:
+  hidden_dims: [512, 256]
+  dropout: 0.2
+  activation: gelu
+  input_norm: true
+
+train:
+  batch_size: 128
+  epochs: 200
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  loss: mse
+  huber_delta: 1.0
+  lr_scheduler: cosine
+  patience: 25
+  min_delta: 1.0e-5
+  grad_clip: 5.0
+
+output:
+  root: /home/mzhao/ECHO-MIMIC-IV/out
+  run_name: qwen_linear_probe

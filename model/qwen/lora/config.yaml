@@ -1,0 +1,55 @@
+# Qwen2.5-VL-3B vision tower + LoRA + MLP (end-to-end)
+seed: 42
+csv: /home/mzhao/ECHO-MIMIC-IV/data/regression.csv
+
+tasks:
+  - reg_lvef
+  - reg_la_4ch_length
+  - reg_ra_length
+  - reg_la_vol
+  - reg_biplane_lvedv
+  - reg_biplane_lvesv
+
+encoder:
+  model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
+  vision_tower_only: true      # 只加载 visual.*，不加载语言模型
+  num_frames: 8                # 偶数（temporal_patch_size=2）
+  image_size: 224              # 28 的倍数
+  pooling: mean
+  dtype: bfloat16
+  attn_implementation: sdpa
+  num_workers: 8
+
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules: [attn.qkv, attn.proj]
+  layers: null                 # null -> 全部 32 个 block；也可写 [0, 1, ...]
+
+head:
+  hidden_dims: [512, 256]
+  dropout: 0.2
+  activation: gelu
+  input_norm: true
+
+train:
+  batch_size: 2
+  grad_accum: 4
+  eval_batch_size: 4
+  epochs: 12
+  lr_lora: 2.0e-4
+  lr_head: 1.0e-3
+  weight_decay: 1.0e-4
+  loss: mse
+  huber_delta: 1.0
+  patience: 3
+  min_delta: 1.0e-4
+  grad_clip: 1.0
+  gradient_checkpointing: true
+  min_lr_ratio: 0.05
+  log_every: 20
+
+output:
+  root: /home/mzhao/ECHO-MIMIC-IV/out
+  run_name: qwen_lora

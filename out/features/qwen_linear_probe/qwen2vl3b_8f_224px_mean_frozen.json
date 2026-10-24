@@ -1,0 +1,40 @@
+{
+  "tag": "qwen2vl3b_8f_224px_mean_frozen",
+  "kind": "qwen_linear_probe",
+  "vision_tower_only": true,
+  "language_model_loaded": false,
+  "model_path": "/mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B",
+  "vision_keys_loaded": 390,
+  "missing": 0,
+  "unexpected": 0,
+  "dtype": "float16",
+  "attn_implementation": "sdpa",
+  "out_hidden_size": 2048,
+  "num_frames": 8,
+  "image_size": 224,
+  "pooling": "mean",
+  "feature_dim": 2048,
+  "n_samples": 6559,
+  "tasks": [
+    "reg_lvef",
+    "reg_la_4ch_length",
+    "reg_ra_length",
+    "reg_la_vol",
+    "reg_biplane_lvedv",
+    "reg_biplane_lvesv"
+  ],
+  "git": {
+    "commit": "3051e03d8998b11de72fc30e04ee9aa4e61e857b",
+    "dirty": true,
+    "branch": "reg"
+  },
+  "environment": {
+    "python": "3.10.22",
+    "torch": "2.5.1+cu124",
+    "cuda_available": true,
+    "cuda_version": "12.4",
+    "gpu_count": 1,
+    "cuda_visible_devices": "3"
+  },
+  "created": "2026-10-24T23:59:25"
+}
