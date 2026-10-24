@@ -1,10 +1,10 @@
-"""Train the MLP regression head on frozen VideoMAE features.
+"""Train the MLP classification head on frozen VideoMAE features.
 
     python train.py --config config.yaml --device cuda
 
-The feature cache is created automatically when missing.  Results are written
-to timestamped ``out/results/videomae/<run>/`` directories (plus ``latest``
-symlinks) and figures to ``out/figures/videomae/<run>/``.
+The feature cache is created automatically when missing.  Results go to
+timestamped ``out/results/videomae/<run>/`` directories (plus ``latest``
+symlinks); figures to ``out/figures/videomae/<run>/``.
 """
 from __future__ import annotations
 
@@ -20,10 +20,12 @@ ROOT = next(p for p in Path(__file__).resolve().parents if (p / "common" / "__in
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from common.data import TASK_COLS, label_stats, load_records, save_split_manifest  # noqa: E402
-from common.metrics import format_metrics_table, masked_regression_metrics  # noqa: E402
-from common.plots import plot_loss_curve, plot_pred_vs_true  # noqa: E402
-from common.trainer import fit_mlp, inverse_standardize, predict_mlp, save_predictions  # noqa: E402
+from common.data import (  # noqa: E402
+    CLASS_NAMES, TASK_COLS, TASK_NUM_CLASSES, class_stats, load_records, save_split_manifest,
+)
+from common.metrics import format_metrics_table, masked_classification_metrics  # noqa: E402
+from common.plots import plot_confusion_matrix, plot_loss_curve, plot_pred_distribution, plot_roc_curve, plot_val_metric  # noqa: E402
+from common.trainer import fit_classifier, predict_proba, save_predictions  # noqa: E402
 from common.utils import (  # noqa: E402
     append_experiment_log, dump_json, environment_snapshot, git_info, link_latest_files, load_config,
     make_run_dir, resolve_device, save_config, seed_everything, setup_logger,
@@ -32,7 +34,7 @@ from extract_features import default_tag, extract  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="VideoMAE frozen features + MLP regression")
+    p = argparse.ArgumentParser(description="VideoMAE frozen features + MLP classification")
     p.add_argument("--config", default=str(Path(__file__).resolve().parent / "config.yaml"))
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--seed", type=int, default=None)
@@ -60,6 +62,9 @@ def main() -> None:
 
     tasks = list(cfg.get("tasks") or TASK_COLS)
     cfg["tasks"] = tasks
+    cfg["num_classes"] = {
+        t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES[t])) for t in tasks
+    }
     if args.epochs is not None:
         cfg["train"]["epochs"] = int(args.epochs)
 
@@ -70,7 +75,7 @@ def main() -> None:
     save_config(cfg, run_dir / "config.yaml")
     logger.info(f"run dir: {run_dir}")
 
-    # --- frozen features (extract once, reuse afterwards) -------------------
+    # --- frozen features ----------------------------------------------------
     tag = args.tag or default_tag(cfg)
     if args.max_videos and args.tag is None:
         tag = f"{tag}_n{args.max_videos}"
@@ -79,63 +84,64 @@ def main() -> None:
         if args.reuse_features:
             raise FileNotFoundError(f"feature cache missing: {feat_path}")
         logger.info(f"feature cache missing, extracting: {feat_path}")
-        feat_path = extract(
-            cfg, logger, device, tag=tag, max_videos=args.max_videos,
-            overwrite=args.overwrite_features,
-        )
+        feat_path = extract(cfg, logger, device, tag=tag, max_videos=args.max_videos,
+                            overwrite=args.overwrite_features)
     elif args.overwrite_features:
         feat_path = extract(cfg, logger, device, tag=tag, max_videos=args.max_videos, overwrite=True)
 
     cache = load_feature_cache(feat_path)
     features = cache["features"].astype(np.float32)
-    labels = cache["labels"].astype(np.float32)
+    labels = cache["labels"].astype(np.int64)
     split = cache["split"].astype(str)
     logger.info(f"features: {features.shape} from {feat_path}")
 
-    # DataFrame aligned with the cache (same order as stored row_id).
     df_all = load_records(cfg["csv"], tasks)
-    id_map = df_all.set_index("row_id")
-    df = id_map.loc[cache["row_id"]].reset_index()
+    df = df_all.set_index("row_id").loc[cache["row_id"]].reset_index()
     assert (df["split"].to_numpy() == split).all(), "split mismatch between cache and csv"
     save_split_manifest(df, run_dir / "split_manifest.csv")
 
-    stats = label_stats(df, tasks)
+    stats = class_stats(df, tasks)
     dump_json(stats, run_dir / "label_stats.json")
-
     tr, va, te = (np.where(split == s)[0] for s in ("train", "val", "test"))
     logger.info(f"split sizes: train={len(tr)} val={len(va)} test={len(te)}")
     for j, t in enumerate(tasks):
-        logger.info(f"  {t}: train={np.isfinite(labels[tr, j]).sum()} val={np.isfinite(labels[va, j]).sum()} test={np.isfinite(labels[te, j]).sum()}")
+        logger.info(f"  {t}: train={(labels[tr, j] >= 0).sum()} val={(labels[va, j] >= 0).sum()} "
+                    f"test={(labels[te, j] >= 0).sum()} classes={cfg['num_classes'][t]}")
 
-    train_out = fit_mlp(
+    out = fit_classifier(
         features[tr], labels[tr], features[va], labels[va], stats, tasks, cfg["train"], seed, device, logger
     )
-    head, history, best_epoch = train_out["head"], train_out["history"], train_out["best_epoch"]
+    model, history, best_epoch = out["model"], out["history"], out["best_epoch"]
 
     # --- evaluation ---------------------------------------------------------
-    results, all_preds = {}, {}
+    results, all_probs = {}, {}
     for name, idx in (("train", tr), ("val", va), ("test", te)):
-        preds_std = predict_mlp(head, torch.as_tensor(features[idx]), device=device)
-        preds = inverse_standardize(preds_std, stats, tasks)
-        all_preds[name] = preds
-        results[name] = masked_regression_metrics(labels[idx], preds, tasks)
+        probs = predict_proba(model, torch.as_tensor(features[idx]), tasks, device=device)
+        all_probs[name] = probs
+        results[name] = masked_classification_metrics(labels[idx], probs, tasks, cfg["num_classes"])
         logger.info(f"[{name}]\n" + format_metrics_table(results[name], tasks))
 
     plot_loss_curve(history, fig_dir / "loss_curve.png", best_epoch=best_epoch)
-    fit_info = {}
-    for name in ("val", "test"):
-        idx = {"val": va, "test": te}[name]
+    plot_val_metric(history, "val_macro_f1", "macro-F1", "Validation macro-F1", fig_dir / "val_macro_f1.png")
+    for name, idx in (("val", va), ("test", te)):
+        suffix = "" if name == "test" else "_val"
         for j, task in enumerate(tasks):
-            fname = f"pred_vs_true_{task}.png" if name == "test" else f"pred_vs_true_{name}_{task}.png"
-            fit_info[f"{name}/{task}"] = plot_pred_vs_true(
-                labels[idx, j], all_preds[name][:, j], task, fig_dir / fname, results[name]["per_task"][task]
-            )
+            m = results[name]["per_task"][task]
+            plot_confusion_matrix(np.asarray(m["confusion_matrix"]), CLASS_NAMES[task], task,
+                                  fig_dir / f"confusion_matrix{suffix}_{task}.png")
+            plot_roc_curve(labels[idx, j], all_probs[name][task], task,
+                           fig_dir / f"roc_curve{suffix}_{task}.png", CLASS_NAMES[task])
+            if name == "test":
+                plot_pred_distribution(labels[idx, j], all_probs[name][task], task,
+                                       fig_dir / f"pred_dist_{task}.png")
 
-    # --- save artifacts -----------------------------------------------------
-    torch.save({"state_dict": head.state_dict(), "in_dim": head.in_dim, "out_dim": head.out_dim,
-                "tasks": tasks, "stats": stats, "config": cfg["train"]}, run_dir / "mlp_head.pt")
+    # --- artifacts ----------------------------------------------------------
+    torch.save({"state_dict": model.state_dict(), "in_dim": model.in_dim,
+                "num_classes": cfg["num_classes"], "tasks": tasks, "stats": stats,
+                "config": cfg["train"]}, run_dir / "mlp_head.pt")
     pred_df = pd.concat(
-        [save_predictions(df.iloc[idx].reset_index(drop=True), all_preds[name], tasks, run_dir / f"predictions_{name}.csv", split_label=name)
+        [save_predictions(df.iloc[idx].reset_index(drop=True), all_probs[name], tasks,
+                          run_dir / f"predictions_{name}.csv", split_label=name)
          for name, idx in (("train", tr), ("val", va), ("test", te))],
         ignore_index=True,
     )
@@ -143,6 +149,7 @@ def main() -> None:
 
     metrics_out = {
         "subproject": "videomae",
+        "task_type": "classification",
         "feature_cache": str(feat_path),
         "feature_dim": int(features.shape[1]),
         "num_frames": cfg["encoder"]["num_frames"],
@@ -150,10 +157,9 @@ def main() -> None:
         "pooling": cfg["encoder"]["pooling"],
         "seed": seed,
         "best_epoch": best_epoch,
-        "best_val_loss": train_out["best_val_loss"],
+        "best_val_macro_f1": out["best_val_macro_f1"],
         "label_stats": stats,
         "metrics": results,
-        "pred_fit": fit_info,
         "history": history,
         "git": git_info(ROOT),
         "environment": environment_snapshot(),
@@ -162,20 +168,20 @@ def main() -> None:
     pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False)
     link_latest_files(run_dir, ["metrics.json", "predictions.csv", "config.yaml", "mlp_head.pt", "label_stats.json"])
 
-    test_macro = results["test"]["macro"]
+    tm = results["test"]["macro"]
     append_experiment_log(
         ROOT,
-        f"VideoMAE 冻结特征 + MLP 回归（{run_name}）",
+        f"VideoMAE 冻结特征 + MLP 分类（{run_name}）",
         {
-            "purpose": "VideoMAE 冻结 backbone 提取特征，训练 MLP 多任务回归头，报告各任务 MAE/RMSE/R2。",
+            "purpose": "VideoMAE 冻结 backbone 提取特征，训练 MLP 多任务分类头；报告 Accuracy/macro-F1/macro-AUC 与混淆矩阵。",
             "command": " ".join(sys.argv),
             "params": f"seed={seed}, frames={cfg['encoder']['num_frames']}, size={cfg['encoder']['image_size']}, "
                       f"pooling={cfg['encoder']['pooling']}, hidden={cfg['head']['hidden_dims']}, "
                       f"lr={cfg['train']['lr']}, bs={cfg['train']['batch_size']}, epochs={cfg['train']['epochs']}, "
-                      f"best_epoch={best_epoch}",
+                      f"class_weight={cfg['train'].get('class_weight', 'balanced')}, best_epoch={best_epoch}",
             "input": cfg["csv"],
             "output": str(run_dir),
-            "result": f"test macro MAE={test_macro['mae']:.4f}, RMSE={test_macro['rmse']:.4f}, R2={test_macro['r2']:.4f}\n"
+            "result": f"test macro Acc={tm['accuracy']:.4f}, F1={tm['macro_f1']:.4f}, AUC={tm['macro_auc']:.4f}\n"
                       + format_metrics_table(results["test"], tasks),
             "conclusion": f"特征缓存 {feat_path}；最佳 epoch={best_epoch}；详细指标见 metrics.json。",
         },

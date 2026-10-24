@@ -1,18 +1,20 @@
 
+
 ## 一、项目概述
 
-本项目基于 `/home/mzhao/ECHO-MIMIC-IV/data/regression.csv` 中定义的若干回归任务，使用 **Qwen2.5-VL-3B** 与 **VideoMAE** 两类视觉骨干网络进行视频/图像序列的回归预测。所有子项目代码分别置于 `/home/mzhao/ECHO-MIMIC-IV/model` 下的对应文件夹中，输出（特征、结果、图片）统一分类保存至 `/home/mzhao/ECHO-MIMIC-IV/out`。
+本项目基于 `/home/mzhao/ECHO-MIMIC-IV/data/classification.csv` 中定义的若干分类任务，使用 **Qwen2.5-VL-3B** 与 **VideoMAE** 两类视觉骨干网络进行视频/图像序列的分类预测。所有子项目代码分别置于 `/home/mzhao/ECHO-MIMIC-IV/model` 下的对应文件夹中，输出（特征、结果、图片）统一分类保存至 `/home/mzhao/ECHO-MIMIC-IV/out`。
 
 ---
 
 ## 二、数据说明
 
-- **数据文件**：`/home/mzhao/ECHO-MIMIC-IV/data/regression.csv`
-- **内容**：包含若干回归任务的标注数据（每个任务对应一个回归目标列），是本项目回归预测任务的唯一数据来源。
+- **数据文件**：`/home/mzhao/ECHO-MIMIC-IV/data/classification.csv`
+- **内容**：包含若干分类任务的标注数据（每个任务对应一个分类目标列），是本项目分类预测任务的唯一数据来源。
 - **使用要求**：
-  - 需先解析 CSV，明确各回归任务的目标列、样本 ID 及对应的视频/图像路径字段。
-  - 需按任务划分训练/验证/测试集（建议固定随机种子，保证各子项目划分一致，便于对比）。
-  - 各回归任务的标签需做标准化（z-score）或按需归一化，评估时反归一化回原尺度报告指标。
+  - 需先解析 CSV，明确各分类任务的目标列、类别集合、样本 ID 及对应的视频/图像路径字段。
+  - 需统计各任务类别分布，识别并处理类别不平衡（如 class weight / 重采样）。
+  - 需按任务划分训练/验证/测试集（建议固定随机种子并尽量分层抽样，保证各子项目划分一致，便于对比）。
+  - 需确认每个分类任务的类别数，作为分类头输出维度的依据。
 
 ---
 
@@ -25,18 +27,18 @@
 
   | 子项目 | 文件夹 | 视觉塔 | 训练部分 |
   |---|---|---|---|
-  | A. 冻结视觉塔 + MLP 头 | `qwen/linear_probe/` | 冻结 | 仅训练 MLP 回归头 |
-  | B. LoRA 微调 + MLP 头 | `qwen/lora/` | LoRA 微调 | LoRA 参数 + MLP 回归头联合训练 |
+  | A. 冻结视觉塔 + MLP 头 | `qwen/linear_probe/` | 冻结 | 仅训练 MLP 分类头 |
+  | B. LoRA 微调 + MLP 头 | `qwen/lora/` | LoRA 微调 | LoRA 参数 + MLP 分类头联合训练 |
 
-  - 子项目 A：视觉塔参数全部冻结，前向提取视频/图像特征后缓存，训练 MLP 回归头。
-  - 子项目 B：在视觉塔注意力层注入 LoRA（可配置 rank/alpha），与 MLP 回归头一起训练；其余参数冻结。
+  - 子项目 A：视觉塔参数全部冻结，前向提取视频/图像特征后缓存，训练 MLP 分类头。
+  - 子项目 B：在视觉塔注意力层注入 LoRA（可配置 rank/alpha），与 MLP 分类头一起训练；其余参数冻结。
 
 ### 2. VideoMAE
 - **参考代码**：`/home/mzhao/模型权重/VideoMAE`
 - **模型权重**：`/home/mzhao/模型权重/VideoMAE/VideoMAE_pth/pytorch_model.bin`
-- **使用约束**：**冻结 VideoMAE 全部参数**，仅训练 MLP 回归头。
+- **使用约束**：**冻结 VideoMAE 全部参数**，仅训练 MLP 分类头。
 - **子项目**（位于 `/home/mzhao/ECHO-MIMIC-IV/model/videomae/`）：
-  - 加载权重 → 冻结 backbone → 提取视频特征 → 训练 MLP 回归头。
+  - 加载权重 → 冻结 backbone → 提取视频特征 → 训练 MLP 分类头。
 
 ---
 
@@ -45,7 +47,7 @@
 ```
 /home/mzhao/ECHO-MIMIC-IV/
 ├── data/
-│   └── regression.csv
+│   └── classification.csv
 ├── model/
 │   ├── qwen/
 │   │   ├── linear_probe/     # 冻结视觉塔 + MLP
@@ -74,7 +76,7 @@
     │   ├── qwen_linear_probe/
     │   ├── qwen_lora/
     │   └── videomae/
-    └── figures/              # 可视化图片（loss曲线、预测散点图等）
+    └── figures/              # 可视化图片（loss曲线、混淆矩阵等）
         ├── qwen_linear_probe/
         ├── qwen_lora/
         └── videomae/
@@ -86,16 +88,16 @@
 
 ### 通用要求
 1. **输入处理**：视频帧采样策略（帧数、分辨率）需在 `config.yaml` 中可配置；图像任务同理。
-2. **回归头（MLP）**：至少两层全连接 + 激活 + Dropout，输出维度等于回归任务数（多任务）或单任务。
-3. **训练**：AdamW 优化器、MSE（或 Huber）损失、学习率与 batch size 可配置；支持早停。
-4. **评估指标**：每个回归任务分别报告 MAE、RMSE、R²（训练/验证/测试）。
+2. **分类头（MLP）**：至少两层全连接 + 激活 + Dropout，输出维度等于该分类任务的类别数（多任务则为各任务独立分类头或拼接输出）。
+3. **训练**：AdamW 优化器、交叉熵损失（可按类别不平衡配置 class weight / focal loss）、学习率与 batch size 可配置；支持早停（基于验证集指标，如 macro-F1 或 accuracy）。
+4. **评估指标**：每个分类任务分别报告 Accuracy、macro-F1、macro-AUC（二分类另报 Precision/Recall/Sensitivity/Specificity），并输出混淆矩阵。
 5. **可复现**：固定随机种子，记录配置文件到输出目录。
 6. **特征保存**：冻结类项目必须将提取特征保存至 `out/features/<子项目>/`，便于复用与对比。
 
 ### 子项目 A：Qwen 冻结视觉塔 + MLP
 - 仅加载 Qwen 视觉塔权重，输入视频/图像 → 输出视觉特征（pooled embedding）。
 - 特征一次性提取并缓存，MLP 训练阶段直接读取缓存特征。
-- 输出：特征文件、MLP 权重、各任务指标、训练曲线与预测散点图。
+- 输出：特征文件、MLP 权重、各任务指标与混淆矩阵、训练曲线与预测分布图。
 
 ### 子项目 B：Qwen LoRA + MLP
 - 视觉塔注入 LoRA（指定 target modules 与 rank），其余参数冻结。
@@ -104,7 +106,7 @@
 
 ### 子项目 C：VideoMAE 冻结 + MLP
 - 加载 `pytorch_model.bin`，冻结 backbone，提取视频特征并缓存。
-- 训练 MLP 回归头；输出同 A。
+- 训练 MLP 分类头；输出同 A。
 
 ---
 
@@ -112,16 +114,16 @@
 
 所有产出统一放在 `/home/mzhao/ECHO-MIMIC-IV/out`，按 `features / results / figures` 三大类，再按子项目名分子目录：
 
-- `out/features/<子项目>/`：`*.npy` 或 `*.pt` 特征文件（含样本 ID 映射）。
-- `out/results/<子项目>/`：`metrics.json`（各任务 MAE/RMSE/R²）、`predictions.csv`、`config.yaml` 副本。
-- `out/figures/<子项目>/`：`loss_curve.png`、`pred_vs_true_<task>.png` 等。
+- `out/features/<子项目>/`：`*.npy` 或 `*.pt` 特征文件（含样本 ID 与标签映射）。
+- `out/results/<子项目>/`：`metrics.json`（各任务 Accuracy/macro-F1/macro-AUC 等）、`predictions.csv`（含预测类别与概率）、`config.yaml` 副本。
+- `out/figures/<子项目>/`：`loss_curve.png`、`confusion_matrix_<task>.png`、`roc_curve_<task>.png` 等。
 
 ---
 
 ## 七、验收标准
 
 1. 三个子项目均可独立运行（`python train.py --config config.yaml`）。
-2. 每个回归任务均输出 MAE / RMSE / R² 三项指标。
+2. 每个分类任务均输出 Accuracy、macro-F1、macro-AUC 三项指标及混淆矩阵。
 3. 冻结类项目特征文件成功保存，且 MLP 训练可复用缓存特征。
 4. LoRA 项目成功保存 adapter 与 MLP 权重。
 5. 输出目录结构符合第六节规范。

@@ -1,4 +1,4 @@
-"""Extract frozen VideoMAE features for every row of ``data/regression.csv``.
+"""Extract frozen VideoMAE features for every row of ``data/classification.csv``.
 
 Example
 -------
@@ -24,7 +24,8 @@ ROOT = next(p for p in Path(__file__).resolve().parents if (p / "common" / "__in
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from common.data import VideoRegressionDataset, collate_batch, load_records  # noqa: E402
+from common.data import (CLASS_NAMES, TASK_NUM_CLASSES, VideoClassificationDataset, collate_batch,
+                         load_records, make_labels)  # noqa: E402
 from common.utils import (  # noqa: E402
     dump_json, environment_snapshot, git_info, load_config, resolve_device, seed_everything, setup_logger,
     worker_init_fn,
@@ -39,7 +40,7 @@ def default_tag(cfg: dict) -> str:
 
 def build_loader(cfg: dict, df, device, batch_size: int | None, num_workers: int | None) -> DataLoader:
     enc = cfg["encoder"]
-    ds = VideoRegressionDataset(df, cfg["tasks"], num_frames=enc["num_frames"], image_size=enc["image_size"])
+    ds = VideoClassificationDataset(df, cfg["tasks"], num_frames=enc["num_frames"], image_size=enc["image_size"])
     return DataLoader(
         ds,
         batch_size=int(batch_size or enc.get("batch_size", 16)),
@@ -94,14 +95,15 @@ def extract(
     use_amp = device.type == "cuda" and amp_dtype is not None
 
     loader = build_loader(cfg, df, device, batch_size, num_workers)
-    feats, labels, meta_all = [], [], {k: [] for k in ("row_id", "subject_id", "study_id", "measurement_id", "video_path", "split")}
+    labels_all = make_labels(df, cfg["tasks"]).astype(np.int8)
+    feats = []
+    meta_all = {k: [] for k in ("row_id", "subject_id", "study_id", "measurement_id", "video_path", "split")}
     t0 = time.time()
     for step, batch in enumerate(tqdm(loader, desc=f"extract {tag}", dynamic_ncols=True), 1):
         pixel = batch["frames"].to(device, non_blocking=True).float().div_(255.0)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             f = encoder(pixel)
         feats.append(f.float().cpu().numpy().astype(np.float16))
-        labels.append(batch["labels"].numpy().astype(np.float32))
         for k in meta_all:
             meta_all[k].extend(batch["meta"][k])
         if step % 20 == 0:
@@ -109,11 +111,10 @@ def extract(
             logger.info(f"step {step}/{len(loader)} | {done}/{len(df)} videos | {done / max(time.time() - t0, 1e-6):.1f} vid/s")
 
     features = np.concatenate(feats, axis=0)
-    label_arr = np.concatenate(labels, axis=0)
     np.savez_compressed(
         out_path,
         features=features,
-        labels=label_arr,
+        labels=labels_all,
         row_id=np.asarray(meta_all["row_id"], dtype=np.int64),
         subject_id=np.asarray(meta_all["subject_id"], dtype=np.int64),
         study_id=np.asarray(meta_all["study_id"], dtype=np.int64),
@@ -133,7 +134,10 @@ def extract(
             "feature_dim": int(features.shape[1]),
             "dtype": "float16",
             "n_samples": int(features.shape[0]),
+            "task_type": "classification",
             "tasks": cfg["tasks"],
+            "num_classes": {t: TASK_NUM_CLASSES[t] for t in cfg["tasks"]},
+            "class_names": {t: CLASS_NAMES[t] for t in cfg["tasks"]},
             "load_info": encoder.load_info,
             "git": git_info(ROOT),
             "environment": environment_snapshot(),
@@ -179,7 +183,7 @@ def add_common_args(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Extract frozen VideoMAE regression features")
+    p = argparse.ArgumentParser(description="Extract frozen VideoMAE classification features")
     add_common_args(p)
     args = p.parse_args()
     cfg = load_config(args.config)

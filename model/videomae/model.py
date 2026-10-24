@@ -1,4 +1,4 @@
-"""Frozen VideoMAE encoder + pooling for regression features."""
+"""Frozen VideoMAE encoder + pooling for classification features."""
 from __future__ import annotations
 
 from pathlib import Path

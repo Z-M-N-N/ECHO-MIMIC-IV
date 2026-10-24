@@ -1,10 +1,9 @@
-"""Qwen2.5-VL vision tower + LoRA + MLP, trained end-to-end.
+"""Qwen2.5-VL vision tower + LoRA + MLP classifier, trained end-to-end.
 
     python train.py --config config.yaml --device cuda
 
-Only LoRA adapters (attention qkv/proj) and the MLP head are trainable; every
-other vision-tower parameter is frozen.  Saves the adapter, MLP head, pooled
-features, metrics and figures.
+Only LoRA adapters (attention qkv/proj) and the MLP classification head are
+trainable; every other vision-tower parameter is frozen.
 """
 from __future__ import annotations
 
@@ -24,20 +23,23 @@ ROOT = next(p for p in Path(__file__).resolve().parents if (p / "common" / "__in
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from common.data import TASK_COLS, VideoRegressionDataset, collate_batch, label_stats, load_records, save_split_manifest  # noqa: E402
-from common.metrics import format_metrics_table, masked_regression_metrics  # noqa: E402
-from common.plots import plot_loss_curve, plot_pred_vs_true  # noqa: E402
-from common.trainer import inverse_standardize, masked_task_loss, save_predictions, standardize_targets  # noqa: E402
+from common.data import (  # noqa: E402
+    CLASS_NAMES, TASK_COLS, TASK_NUM_CLASSES, VideoClassificationDataset, class_stats, collate_batch,
+    load_records, save_split_manifest,
+)
+from common.metrics import format_metrics_table, masked_classification_metrics  # noqa: E402
+from common.plots import plot_confusion_matrix, plot_loss_curve, plot_pred_distribution, plot_roc_curve, plot_val_metric  # noqa: E402
+from common.trainer import masked_ce_loss, save_predictions  # noqa: E402
 from common.utils import (  # noqa: E402
     AverageMeter, EarlyStopping, append_experiment_log, dump_json, environment_snapshot, git_info,
     link_latest_files, load_config, make_run_dir, resolve_device, save_config, seed_everything, setup_logger,
     worker_init_fn,
 )
-from model import QwenLoraRegressor  # noqa: E402
+from model import QwenLoraClassifier  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Qwen2.5-VL LoRA + MLP regression")
+    p = argparse.ArgumentParser(description="Qwen2.5-VL LoRA + MLP classification")
     p.add_argument("--config", default=str(Path(__file__).resolve().parent / "config.yaml"))
     p.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     p.add_argument("--seed", type=int, default=None)
@@ -52,7 +54,7 @@ def make_loader(cfg, df, tasks, device, train: bool, batch_size: int, max_sample
     enc = cfg["encoder"]
     if max_samples:
         df = df.iloc[: int(max_samples)].reset_index(drop=True)
-    ds = VideoRegressionDataset(df, tasks, num_frames=enc["num_frames"], image_size=enc["image_size"])
+    ds = VideoClassificationDataset(df, tasks, num_frames=enc["num_frames"], image_size=enc["image_size"])
     return DataLoader(
         ds,
         batch_size=batch_size,
@@ -67,27 +69,32 @@ def make_loader(cfg, df, tasks, device, train: bool, batch_size: int, max_sample
 
 
 @torch.no_grad()
-def evaluate(model, loader, stats, tasks, device, amp_dtype, collect_features=False):
+def evaluate(model, loader, tasks, num_classes, device, amp_dtype, class_weights, collect_features=False):
     model.eval()
-    preds_std, labels, feats = [], [], []
+    probs = {t: [] for t in tasks}
+    labels, feats = [], []
+    total_loss, total_n = 0.0, 0
     meta_all = {k: [] for k in ("row_id", "subject_id", "study_id", "measurement_id", "video_path", "split")}
     for batch in loader:
         frames = batch["frames"].to(device, non_blocking=True)
+        y = batch["labels"].to(device, non_blocking=True)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
-            out, f = model(frames, return_features=True)
-        preds_std.append(out.float().cpu().numpy())
-        labels.append(batch["labels"].numpy())
+            logits, f = model(frames, return_features=True)
+        loss = masked_ce_loss(logits, y, tasks, class_weights=class_weights)
+        total_loss += float(loss) * len(y)
+        total_n += len(y)
+        for t in tasks:
+            probs[t].append(torch.softmax(logits[t].float(), dim=1).cpu().numpy())
+        labels.append(y.cpu().numpy())
         if collect_features:
             feats.append(f.float().cpu().numpy().astype(np.float16))
         for k in meta_all:
             meta_all[k].extend(batch["meta"][k])
-    preds = inverse_standardize(np.concatenate(preds_std, axis=0), stats, tasks)
-    labels = np.concatenate(labels, axis=0)
     return {
-        "preds": preds,
-        "preds_std": np.concatenate(preds_std, axis=0),
-        "labels": labels,
+        "probs": {t: np.concatenate(v, axis=0) for t, v in probs.items()},
+        "labels": np.concatenate(labels, axis=0),
         "features": np.concatenate(feats, axis=0) if collect_features else None,
+        "loss": total_loss / max(total_n, 1),
         "meta": meta_all,
     }
 
@@ -102,7 +109,9 @@ def main() -> None:
 
     tasks = list(cfg.get("tasks") or TASK_COLS)
     cfg["tasks"] = tasks
-    cfg["num_tasks"] = len(tasks)
+    cfg["num_classes"] = {
+        t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES[t])) for t in tasks
+    }
     if args.epochs is not None:
         cfg["train"]["epochs"] = int(args.epochs)
 
@@ -115,10 +124,8 @@ def main() -> None:
 
     df_all = load_records(cfg["csv"], tasks)
     save_split_manifest(df_all, run_dir / "split_manifest.csv")
-    stats = label_stats(df_all, tasks)
+    stats = class_stats(df_all, tasks)
     dump_json(stats, run_dir / "label_stats.json")
-    mean = torch.tensor([stats[t]["mean"] for t in tasks], device=device, dtype=torch.float32)
-    std = torch.tensor([stats[t]["std"] for t in tasks], device=device, dtype=torch.float32)
 
     tr_cfg = cfg["train"]
     bs = int(tr_cfg.get("batch_size", 2))
@@ -132,11 +139,16 @@ def main() -> None:
     logger.info(f"split sizes: train={len(train_ds)} val={len(splits['val'])} test={len(splits['test'])}")
 
     # --- model + optimizer --------------------------------------------------
-    model = QwenLoraRegressor(cfg, device=device)
+    model = QwenLoraClassifier(cfg, device=device)
     summary = model.trainable_summary()
     logger.info(f"trainable summary: {json.dumps(summary)}")
     dump_json(summary, run_dir / "trainable_params.json")
     logger.info(f"vision load info: {model.encoder.load_info}")
+
+    use_weights = str(tr_cfg.get("class_weight", "balanced")).lower() == "balanced"
+    class_weights = {
+        t: torch.tensor(stats[t]["class_weights"], dtype=torch.float32, device=device) for t in tasks
+    } if use_weights else None
 
     lora_params = [p for p in model.encoder.visual.parameters() if p.requires_grad]
     head_params = [p for p in model.head.parameters() if p.requires_grad]
@@ -150,14 +162,16 @@ def main() -> None:
     epochs = int(tr_cfg.get("epochs", 12))
     grad_accum = int(tr_cfg.get("grad_accum", 1))
     total_steps = max(1, int(np.ceil(len(train_loader) / grad_accum))) * epochs
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=total_steps, eta_min=float(tr_cfg.get("min_lr_ratio", 0.05)) * float(tr_cfg.get("lr_lora", 2e-4)))
-    stopper = EarlyStopping(patience=int(tr_cfg.get("patience", 3)), min_delta=float(tr_cfg.get("min_delta", 1e-4)))
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=total_steps, eta_min=float(tr_cfg.get("min_lr_ratio", 0.05)) * float(tr_cfg.get("lr_lora", 2e-4))
+    )
+    stopper = EarlyStopping(patience=int(tr_cfg.get("patience", 3)), min_delta=float(tr_cfg.get("min_delta", 1e-4)), mode="max")
     amp_dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16}.get(str(cfg["encoder"].get("dtype", "bfloat16")))
+    focal_gamma = float(tr_cfg.get("focal_gamma", 0.0))
+    kind = str(tr_cfg.get("loss", "ce")).lower()
 
-    history = {"train_loss": [], "val_loss": [], "lr": []}
-    best_epoch, best_val, best_lora, best_head = 0, float("inf"), None, None
-    kind = str(tr_cfg.get("loss", "mse")).lower()
-    delta = float(tr_cfg.get("huber_delta", 1.0))
+    history = {"train_loss": [], "val_loss": [], "val_macro_f1": [], "val_accuracy": [], "lr": []}
+    best_epoch, best_score, best_lora, best_head = 0, float("-inf"), None, None
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -167,10 +181,12 @@ def main() -> None:
         for step, batch in enumerate(train_loader, 1):
             frames = batch["frames"].to(device, non_blocking=True)
             y = batch["labels"].to(device, non_blocking=True)
-            y = (y - mean) / std  # NaNs stay NaN
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=(device.type == "cuda")):
-                pred = model(frames)
-            loss = masked_task_loss(pred.float(), y, kind=kind, huber_delta=delta)
+                logits = model(frames)
+            loss = masked_ce_loss(
+                logits, y, tasks, class_weights=class_weights,
+                focal_gamma=focal_gamma if kind == "focal" else 0.0,
+            )
             (loss / grad_accum).backward()
             meter.update(float(loss.detach()), frames.shape[0])
 
@@ -187,25 +203,25 @@ def main() -> None:
                 logger.info(f"epoch {epoch} step {step}/{len(train_loader)} | loss {meter.avg:.5f} | "
                             f"{meter.count / max(time.time() - t0, 1e-6):.2f} samples/s")
 
-        val_out = evaluate(model, val_loader, stats, tasks, device, amp_dtype)
-        val_y_std = standardize_targets(val_out["labels"], stats, tasks)
-        with torch.no_grad():
-            val_loss = float(masked_task_loss(
-                torch.as_tensor(val_out["preds_std"]).float(), torch.as_tensor(val_y_std).float(),
-                kind=kind, huber_delta=delta,
-            ))
+        val_out = evaluate(model, val_loader, tasks, cfg["num_classes"], device, amp_dtype, class_weights)
+        val_metrics = masked_classification_metrics(val_out["labels"], val_out["probs"], tasks, cfg["num_classes"])
+        val_f1 = float(val_metrics["macro"]["macro_f1"])
+        val_acc = float(val_metrics["macro"]["accuracy"])
         history["train_loss"].append(meter.avg)
-        history["val_loss"].append(val_loss)
+        history["val_loss"].append(val_out["loss"])
+        history["val_macro_f1"].append(val_f1)
+        history["val_accuracy"].append(val_acc)
         history["lr"].append(float(opt.param_groups[0]["lr"]))
-        logger.info(f"epoch {epoch:3d}/{epochs} | train {meter.avg:.5f} | val {val_loss:.5f} | "
-                    f"lr {opt.param_groups[0]['lr']:.2e} | {time.time() - t0:.0f}s")
+        logger.info(f"epoch {epoch:3d}/{epochs} | train {meter.avg:.5f} | val {val_out['loss']:.5f} | "
+                    f"val_F1m {val_f1:.4f} | val_Acc {val_acc:.4f} | lr {opt.param_groups[0]['lr']:.2e} | "
+                    f"{time.time() - t0:.0f}s")
 
-        if stopper.step(val_loss, epoch):
-            best_epoch, best_val = epoch, val_loss
+        if stopper.step(val_f1, epoch):
+            best_epoch, best_score = epoch, val_f1
             best_lora = {k: v.detach().cpu().clone() for k, v in model.encoder.visual.state_dict().items() if "lora_" in k}
             best_head = {k: v.detach().cpu().clone() for k, v in model.head.state_dict().items()}
-            logger.info(f"  new best val loss {val_loss:.5f} @ epoch {epoch}")
-        logger.info(f"  best {stopper.best:.5f} @ {best_epoch}")
+            logger.info(f"  new best val macro-F1 {val_f1:.4f} @ epoch {epoch}")
+        logger.info(f"  best {stopper.best:.4f} @ {best_epoch}")
         if stopper.should_stop:
             logger.info(f"early stopping at epoch {epoch} (patience={stopper.patience})")
             break
@@ -217,14 +233,14 @@ def main() -> None:
         model.head.load_state_dict(best_head)
         logger.info(f"restored best weights from epoch {best_epoch}")
 
-    # --- final evaluation + pooled features for all splits ------------------
-    results, all_preds, feature_bank = {}, {}, {"features": [], "labels": [], "split": [], "meta": {}}
-    for name, loader, df_split in (("train", train_loader, splits["train"]),
-                                   ("val", val_loader, splits["val"]),
-                                   ("test", test_loader, splits["test"])):
-        out = evaluate(model, loader, stats, tasks, device, amp_dtype, collect_features=True)
-        all_preds[name] = out["preds"]
-        results[name] = masked_regression_metrics(out["labels"], out["preds"], tasks)
+    # --- final evaluation + pooled features --------------------------------
+    results, all_probs, feature_bank = {}, {}, {"features": [], "labels": [], "split": [], "meta": {}}
+    for name, loader, idx_df in (("train", train_loader, splits["train"]),
+                                 ("val", val_loader, splits["val"]),
+                                 ("test", test_loader, splits["test"])):
+        out = evaluate(model, loader, tasks, cfg["num_classes"], device, amp_dtype, class_weights, collect_features=True)
+        all_probs[name] = out["probs"]
+        results[name] = masked_classification_metrics(out["labels"], out["probs"], tasks, cfg["num_classes"])
         logger.info(f"[{name}]\n" + format_metrics_table(results[name], tasks))
         feature_bank["features"].append(out["features"])
         feature_bank["labels"].append(out["labels"])
@@ -234,24 +250,28 @@ def main() -> None:
 
     # --- figures ------------------------------------------------------------
     plot_loss_curve(history, fig_dir / "loss_curve.png", best_epoch=best_epoch)
-    fit_info = {}
+    plot_val_metric(history, "val_macro_f1", "macro-F1", "Validation macro-F1", fig_dir / "val_macro_f1.png")
     for name, idx_df in (("val", splits["val"]), ("test", splits["test"])):
+        suffix = "" if name == "test" else "_val"
         for j, task in enumerate(tasks):
-            fname = f"pred_vs_true_{task}.png" if name == "test" else f"pred_vs_true_val_{task}.png"
-            fit_info[f"{name}/{task}"] = plot_pred_vs_true(
-                idx_df[task].to_numpy(dtype=np.float64), all_preds[name][:, j], task,
-                fig_dir / fname, results[name]["per_task"][task],
-            )
+            m = results[name]["per_task"][task]
+            plot_confusion_matrix(np.asarray(m["confusion_matrix"]), CLASS_NAMES[task], task,
+                                  fig_dir / f"confusion_matrix{suffix}_{task}.png")
+            plot_roc_curve(idx_df[task].to_numpy(dtype=np.float64), all_probs[name][task], task,
+                           fig_dir / f"roc_curve{suffix}_{task}.png", CLASS_NAMES[task])
+            if name == "test":
+                plot_pred_distribution(idx_df[task].to_numpy(dtype=np.float64), all_probs[name][task], task,
+                                       fig_dir / f"pred_dist_{task}.png")
 
     # --- artifacts ----------------------------------------------------------
     adapter_dir = run_dir / "adapter"
     model.encoder.visual.save_pretrained(adapter_dir)
     torch.save({"state_dict": model.head.state_dict(), "in_dim": model.head.in_dim,
-                "out_dim": model.head.out_dim, "tasks": tasks, "stats": stats,
+                "num_classes": cfg["num_classes"], "tasks": tasks, "stats": stats,
                 "config": cfg.get("head", {})}, run_dir / "mlp_head.pt")
     with open(run_dir / "lora_config.json", "w", encoding="utf-8") as f:
         json.dump({"lora": cfg.get("lora", {}), "trainable": summary,
-                   "best_epoch": best_epoch, "best_val_loss": best_val}, f, indent=2)
+                   "best_epoch": best_epoch, "best_val_macro_f1": best_score}, f, indent=2)
 
     feature_path = Path(cfg["output"]["root"]) / "features/qwen_lora" / f"{run_dir.name}.npz"
     feature_path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,7 +279,7 @@ def main() -> None:
     np.savez_compressed(
         feature_path,
         features=np.concatenate(feature_bank["features"], axis=0),
-        labels=np.concatenate(feature_bank["labels"], axis=0).astype(np.float32),
+        labels=np.concatenate(feature_bank["labels"], axis=0).astype(np.int8),
         row_id=np.asarray(meta["row_id"], dtype=np.int64),
         subject_id=np.asarray(meta["subject_id"], dtype=np.int64),
         study_id=np.asarray(meta["study_id"], dtype=np.int64),
@@ -271,6 +291,7 @@ def main() -> None:
         {
             "tag": run_dir.name,
             "kind": "qwen_lora",
+            "task_type": "classification",
             "run_dir": str(run_dir),
             "adapter_dir": str(adapter_dir),
             "num_frames": cfg["encoder"]["num_frames"],
@@ -280,6 +301,8 @@ def main() -> None:
             "dtype": "float16",
             "n_samples": int(sum(len(x) for x in feature_bank["features"])),
             "tasks": tasks,
+            "num_classes": cfg["num_classes"],
+            "class_names": {t: CLASS_NAMES[t] for t in tasks},
             "trainable": summary,
             "git": git_info(ROOT),
             "environment": environment_snapshot(),
@@ -289,7 +312,7 @@ def main() -> None:
     )
 
     pred_df = pd.concat(
-        [save_predictions(splits[name].reset_index(drop=True), all_preds[name], tasks,
+        [save_predictions(splits[name].reset_index(drop=True), all_probs[name], tasks,
                           run_dir / f"predictions_{name}.csv", split_label=name)
          for name in ("train", "val", "test")],
         ignore_index=True,
@@ -298,6 +321,7 @@ def main() -> None:
 
     metrics_out = {
         "subproject": "qwen_lora",
+        "task_type": "classification",
         "vision_tower_only": True,
         "language_model_loaded": False,
         "adapter": str(adapter_dir),
@@ -310,10 +334,9 @@ def main() -> None:
         "trainable": summary,
         "seed": seed,
         "best_epoch": best_epoch,
-        "best_val_loss": best_val,
+        "best_val_macro_f1": best_score,
         "label_stats": stats,
         "metrics": results,
-        "pred_fit": fit_info,
         "history": history,
         "git": git_info(ROOT),
         "environment": environment_snapshot(),
@@ -323,12 +346,12 @@ def main() -> None:
     link_latest_files(run_dir, ["metrics.json", "predictions.csv", "config.yaml", "mlp_head.pt",
                                 "label_stats.json", "lora_config.json"])
 
-    test_macro = results["test"]["macro"]
+    tm = results["test"]["macro"]
     append_experiment_log(
         ROOT,
-        f"Qwen2.5-VL 视觉塔 LoRA + MLP 端到端回归（{run_name}）",
+        f"Qwen2.5-VL 视觉塔 LoRA + MLP 分类（{run_name}）",
         {
-            "purpose": "仅加载 Qwen2.5-VL 视觉塔，在注意力 qkv/proj 注入 LoRA，与 MLP 回归头联合训练。",
+            "purpose": "仅加载 Qwen2.5-VL 视觉塔，在注意力 qkv/proj 注入 LoRA，与 MLP 分类头联合训练。",
             "command": " ".join(sys.argv),
             "params": f"seed={seed}, frames={cfg['encoder']['num_frames']}, size={cfg['encoder']['image_size']}, "
                       f"lora_r={cfg['lora']['r']}, alpha={cfg['lora']['alpha']}, "
@@ -337,7 +360,7 @@ def main() -> None:
                       f"epochs={cfg['train']['epochs']}, best_epoch={best_epoch}, trainable={summary['trainable_params']}",
             "input": cfg["csv"],
             "output": str(run_dir),
-            "result": f"test macro MAE={test_macro['mae']:.4f}, RMSE={test_macro['rmse']:.4f}, R2={test_macro['r2']:.4f}\n"
+            "result": f"test macro Acc={tm['accuracy']:.4f}, F1={tm['macro_f1']:.4f}, AUC={tm['macro_auc']:.4f}\n"
                       + format_metrics_table(results["test"], tasks),
             "conclusion": f"adapter -> {adapter_dir}；特征 -> {feature_path}；最佳 epoch={best_epoch}。",
         },

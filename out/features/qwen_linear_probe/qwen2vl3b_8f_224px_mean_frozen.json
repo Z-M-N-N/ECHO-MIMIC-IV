@@ -14,19 +14,36 @@
   "image_size": 224,
   "pooling": "mean",
   "feature_dim": 2048,
-  "n_samples": 6559,
+  "n_samples": 6557,
+  "task_type": "classification",
   "tasks": [
-    "reg_lvef",
-    "reg_la_4ch_length",
-    "reg_ra_length",
-    "reg_la_vol",
-    "reg_biplane_lvedv",
-    "reg_biplane_lvesv"
+    "cls_rv_function",
+    "cls_la_size",
+    "cls_ra_size"
   ],
+  "num_classes": {
+    "cls_rv_function": 2,
+    "cls_la_size": 2,
+    "cls_ra_size": 2
+  },
+  "class_names": {
+    "cls_rv_function": [
+      "0",
+      "1"
+    ],
+    "cls_la_size": [
+      "0",
+      "1"
+    ],
+    "cls_ra_size": [
+      "0",
+      "1"
+    ]
+  },
   "git": {
-    "commit": "3051e03d8998b11de72fc30e04ee9aa4e61e857b",
+    "commit": "d414fe13b7e477672876011b357e8615eac7ec89",
     "dirty": true,
-    "branch": "reg"
+    "branch": "cls"
   },
   "environment": {
     "python": "3.10.22",
@@ -36,5 +53,5 @@
     "gpu_count": 1,
     "cuda_visible_devices": "3"
   },
-  "created": "2026-10-24T23:59:25"
+  "created": "2026-10-25T00:52:43"
 }

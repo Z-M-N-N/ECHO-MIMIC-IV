@@ -1,14 +1,16 @@
-# Qwen2.5-VL-3B vision tower + LoRA + MLP (end-to-end)
+# Qwen2.5-VL-3B vision tower + LoRA + MLP classification (end-to-end)
 seed: 42
-csv: /home/mzhao/ECHO-MIMIC-IV/data/regression.csv
+csv: /home/mzhao/ECHO-MIMIC-IV/data/classification.csv
 
 tasks:
-  - reg_lvef
-  - reg_la_4ch_length
-  - reg_ra_length
-  - reg_la_vol
-  - reg_biplane_lvedv
-  - reg_biplane_lvesv
+  - cls_rv_function
+  - cls_la_size
+  - cls_ra_size
+
+num_classes:
+  cls_rv_function: 2
+  cls_la_size: 2
+  cls_ra_size: 2
 
 encoder:
   model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
@@ -41,8 +43,9 @@ train:
   lr_lora: 2.0e-4
   lr_head: 1.0e-3
   weight_decay: 1.0e-4
-  loss: mse
-  huber_delta: 1.0
+  loss: ce
+  focal_gamma: 0.0
+  class_weight: balanced
   patience: 3
   min_delta: 1.0e-4
   grad_clip: 1.0
@@ -52,4 +55,4 @@ train:
 
 output:
   root: /home/mzhao/ECHO-MIMIC-IV/out
-  run_name: qwen_lora
+  run_name: qwen_lora_cls

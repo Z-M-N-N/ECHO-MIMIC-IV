@@ -1,1 +1,1 @@
-"""Shared utilities for the ECHO-MIMIC-IV regression subprojects."""
+"""Shared utilities for the ECHO-MIMIC-IV classification subprojects."""

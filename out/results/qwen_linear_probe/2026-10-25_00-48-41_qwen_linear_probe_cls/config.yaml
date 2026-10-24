@@ -1,0 +1,45 @@
+seed: 42
+csv: /home/mzhao/ECHO-MIMIC-IV/data/classification.csv
+tasks:
+- cls_rv_function
+- cls_la_size
+- cls_ra_size
+num_classes:
+  cls_rv_function: 2
+  cls_la_size: 2
+  cls_ra_size: 2
+encoder:
+  model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
+  vision_tower_only: true
+  num_frames: 8
+  image_size: 224
+  pooling: mean
+  dtype: bfloat16
+  attn_implementation: sdpa
+  batch_size: 4
+  num_workers: 8
+feature:
+  dir: /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_linear_probe
+  tag: null
+head:
+  hidden_dims:
+  - 512
+  - 256
+  dropout: 0.2
+  activation: gelu
+  input_norm: true
+train:
+  batch_size: 128
+  epochs: 200
+  lr: 0.001
+  weight_decay: 0.0001
+  loss: ce
+  focal_gamma: 0.0
+  class_weight: balanced
+  lr_scheduler: cosine
+  patience: 25
+  min_delta: 0.0001
+  grad_clip: 5.0
+output:
+  root: /home/mzhao/ECHO-MIMIC-IV/out
+  run_name: qwen_linear_probe_cls

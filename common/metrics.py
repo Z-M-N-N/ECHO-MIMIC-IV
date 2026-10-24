@@ -1,45 +1,121 @@
-"""NaN-aware per-task regression metrics (MAE / RMSE / R2)."""
+"""NaN-aware (missing-label aware) classification metrics.
+
+Per task we report Accuracy, macro-F1, macro-AUC (OVR), macro Precision/Recall,
+per-class precision/recall/F1, and for binary tasks the positive-class
+(``class 1``) Sensitivity / Specificity.  A confusion matrix is stored as a
+nested list for plotting.
+"""
 from __future__ import annotations
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    precision_recall_fscore_support,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 
-METRIC_KEYS = ("n", "mae", "rmse", "r2")
-
-
-def _task_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    err = y_pred - y_true
-    n = int(err.size)
-    mae = float(np.mean(np.abs(err)))
-    rmse = float(np.sqrt(np.mean(err**2)))
-    ss_res = float(np.sum(err**2))
-    ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
-    r2 = float(1.0 - ss_res / ss_tot) if n > 1 and ss_tot > 1e-12 else float("nan")
-    return {"n": n, "mae": mae, "rmse": rmse, "r2": r2}
+METRIC_KEYS = ("n", "accuracy", "macro_f1", "macro_auc", "macro_precision", "macro_recall")
 
 
-def masked_regression_metrics(
-    y_true: np.ndarray, y_pred: np.ndarray, tasks: Sequence[str]
+def _safe_auc(y_true: np.ndarray, probs: np.ndarray, num_classes: int) -> float:
+    present = np.unique(y_true)
+    try:
+        if num_classes == 2:
+            if len(present) < 2:
+                return float("nan")
+            return float(roc_auc_score(y_true, probs[:, 1]))
+        if len(present) < num_classes:
+            return float("nan")
+        return float(roc_auc_score(y_true, probs, multi_class="ovr", average="macro", labels=list(range(num_classes))))
+    except ValueError:
+        return float("nan")
+
+
+def _binary_sens_spec(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float]:
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    sens = tp / (tp + fn) if (tp + fn) else float("nan")
+    spec = tn / (tn + fp) if (tn + fp) else float("nan")
+    return float(sens), float(spec)
+
+
+def _task_metrics(y_true: np.ndarray, probs: np.ndarray, num_classes: int) -> dict:
+    valid = y_true >= 0
+    n = int(valid.sum())
+    if n == 0:
+        return {
+            "n": 0, "accuracy": float("nan"), "macro_f1": float("nan"), "macro_auc": float("nan"),
+            "macro_precision": float("nan"), "macro_recall": float("nan"),
+            "sensitivity": float("nan"), "specificity": float("nan"),
+            "per_class": {}, "confusion_matrix": [[0] * num_classes for _ in range(num_classes)],
+        }
+
+    yt = y_true[valid].astype(int)
+    pr = probs[valid].astype(np.float64)
+    yp = pr.argmax(axis=1)
+
+    acc = float(accuracy_score(yt, yp))
+    f1_macro = float(f1_score(yt, yp, average="macro", labels=list(range(num_classes)), zero_division=0))
+    prec_macro = float(precision_score(yt, yp, average="macro", labels=list(range(num_classes)), zero_division=0))
+    rec_macro = float(recall_score(yt, yp, average="macro", labels=list(range(num_classes)), zero_division=0))
+    auc = _safe_auc(yt, pr, num_classes)
+
+    p_cls, r_cls, f_cls, s_cls = precision_recall_fscore_support(
+        yt, yp, labels=list(range(num_classes)), zero_division=0
+    )
+    per_class = {
+        str(c): {
+            "precision": float(p_cls[c]), "recall": float(r_cls[c]), "f1": float(f_cls[c]),
+            "support": int(s_cls[c]),
+        }
+        for c in range(num_classes)
+    }
+    cm = confusion_matrix(yt, yp, labels=list(range(num_classes)))
+    sens = spec = float("nan")
+    if num_classes == 2:
+        sens, spec = _binary_sens_spec(yt, yp)
+
+    return {
+        "n": n,
+        "accuracy": acc,
+        "macro_f1": f1_macro,
+        "macro_auc": auc,
+        "macro_precision": prec_macro,
+        "macro_recall": rec_macro,
+        "sensitivity": sens,
+        "specificity": spec,
+        "per_class": per_class,
+        "confusion_matrix": cm.astype(int).tolist(),
+    }
+
+
+def masked_classification_metrics(
+    y_true: np.ndarray,
+    probs: Mapping[str, np.ndarray],
+    tasks: Sequence[str],
+    num_classes: Mapping[str, int] | None = None,
 ) -> dict[str, dict]:
-    """Return ``{"per_task": {...}, "macro": {...}}`` ignoring NaNs per task."""
-    y_true = np.asarray(y_true, dtype=np.float64)
-    y_pred = np.asarray(y_pred, dtype=np.float64)
-    if y_true.shape != y_pred.shape or y_true.ndim != 2:
-        raise ValueError(f"shape mismatch: {y_true.shape} vs {y_pred.shape}")
-    if y_true.shape[1] != len(tasks):
-        raise ValueError("number of columns does not match number of tasks")
+    """``y_true``: ``[N,K]`` int with -1 missing; ``probs``: task -> ``[N,C]``."""
+    y_true = np.asarray(y_true)
+    if y_true.ndim != 2 or y_true.shape[1] != len(tasks):
+        raise ValueError(f"unexpected y_true shape {y_true.shape}")
+    num_classes = num_classes or {t: int(probs[t].shape[1]) for t in tasks}
 
     per_task = {}
     for j, task in enumerate(tasks):
-        valid = np.isfinite(y_true[:, j]) & np.isfinite(y_pred[:, j])
-        if valid.sum() == 0:
-            per_task[task] = {"n": 0, "mae": float("nan"), "rmse": float("nan"), "r2": float("nan")}
-            continue
-        per_task[task] = _task_metrics(y_true[valid, j], y_pred[valid, j])
+        p = np.asarray(probs[task])
+        if p.shape[0] != y_true.shape[0]:
+            raise ValueError(f"{task}: probs rows {p.shape[0]} != labels {y_true.shape[0]}")
+        per_task[task] = _task_metrics(y_true[:, j], p, int(num_classes[task]))
 
     macro = {}
-    for key in ("mae", "rmse", "r2"):
+    for key in ("accuracy", "macro_f1", "macro_auc", "macro_precision", "macro_recall"):
         vals = [per_task[t][key] for t in tasks if np.isfinite(per_task[t][key])]
         macro[key] = float(np.mean(vals)) if vals else float("nan")
     macro["n_tasks"] = len(tasks)
@@ -47,13 +123,16 @@ def masked_regression_metrics(
 
 
 def format_metrics_table(metrics: dict[str, dict], tasks: Sequence[str]) -> str:
-    lines = [f"{'task':22s} {'n':>6s} {'MAE':>10s} {'RMSE':>10s} {'R2':>8s}"]
+    lines = [f"{'task':20s} {'n':>5s} {'Acc':>7s} {'F1m':>7s} {'AUCm':>7s} {'Pm':>7s} {'Rm':>7s} {'Sens':>7s} {'Spec':>7s}"]
     for t in tasks:
         m = metrics["per_task"][t]
         lines.append(
-            f"{t:22s} {m['n']:6d} {m['mae']:10.4f} {m['rmse']:10.4f} "
-            f"{(m['r2'] if np.isfinite(m['r2']) else float('nan')):8.4f}"
+            f"{t:20s} {m['n']:5d} {m['accuracy']:7.4f} {m['macro_f1']:7.4f} {m['macro_auc']:7.4f} "
+            f"{m['macro_precision']:7.4f} {m['macro_recall']:7.4f} {m['sensitivity']:7.4f} {m['specificity']:7.4f}"
         )
-    m = metrics["macro"]
-    lines.append(f"{'macro':22s} {'':>6s} {m['mae']:10.4f} {m['rmse']:10.4f} {m['r2']:8.4f}")
+    a = metrics["macro"]
+    lines.append(
+        f"{'macro':20s} {'':>5s} {a['accuracy']:7.4f} {a['macro_f1']:7.4f} {a['macro_auc']:7.4f} "
+        f"{a['macro_precision']:7.4f} {a['macro_recall']:7.4f}"
+    )
     return "\n".join(lines)

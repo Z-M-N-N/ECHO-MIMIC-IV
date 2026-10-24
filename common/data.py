@@ -1,27 +1,23 @@
-"""Dataset / CSV utilities shared by all three regression subprojects.
+"""Dataset / CSV utilities for the ECHO-MIMIC-IV **classification** tasks.
 
-The single source of truth is ``data/regression.csv``.  Each row is one
-echocardiography video with an explicit ``split`` column (train/val/test) and up
-to six regression targets.  Missing targets are kept as ``NaN`` and masked out
-by the loss / metrics, so multi-task training uses every labelled row.
+``data/classification.csv`` has one row per echocardiography video, a fixed
+``split`` column (train/val/test) and three binary targets.  Missing targets
+are encoded as ``-1`` and masked out of the loss / metrics, so every labelled
+row is usable for multi-task training.
 
-Every item returned by :class:`VideoRegressionDataset` is a dict::
+Each item returned by :class:`VideoClassificationDataset` is::
 
     {
         "frames": uint8 tensor [T, 3, H, W],
-        "labels": float32 tensor [K]   (NaN where the target is missing),
+        "labels": int64 tensor [K]   (-1 = missing),
         "meta":   {"row_id", "subject_id", "study_id", "measurement_id",
                    "video_path", "split"},
     }
-
-Frame decoding uses decord (fast, random access) with a torchvision fallback.
-Sampling is deterministic uniform sampling over the decoded clip, so the same
-csv row always yields the same frames for a given ``num_frames``.
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -29,13 +25,12 @@ import torch
 from torch.utils.data import Dataset
 
 TASK_COLS: tuple[str, ...] = (
-    "reg_lvef",
-    "reg_la_4ch_length",
-    "reg_ra_length",
-    "reg_la_vol",
-    "reg_biplane_lvedv",
-    "reg_biplane_lvesv",
+    "cls_rv_function",
+    "cls_la_size",
+    "cls_ra_size",
 )
+TASK_NUM_CLASSES: dict[str, int] = {t: 2 for t in TASK_COLS}
+CLASS_NAMES: dict[str, list[str]] = {t: [str(i) for i in range(TASK_NUM_CLASSES[t])] for t in TASK_COLS}
 META_COLS: tuple[str, ...] = ("subject_id", "study_id", "measurement_id")
 SPLITS: tuple[str, ...] = ("train", "val", "test")
 
@@ -49,11 +44,7 @@ def load_records(
     splits: Sequence[str] | None = None,
     require_any_label: bool = True,
 ) -> pd.DataFrame:
-    """Load ``regression.csv``, validate columns and optionally subset rows.
-
-    ``row_id`` is the original CSV row index and is preserved as the join key
-    between cached features, predictions and labels.
-    """
+    """Load ``classification.csv`` and validate columns / split values."""
     csv_path = Path(csv_path).expanduser()
     if not csv_path.exists():
         raise FileNotFoundError(f"csv not found: {csv_path}")
@@ -72,6 +63,11 @@ def load_records(
     bad_splits = sorted(set(df["split"]) - set(SPLITS))
     if bad_splits:
         raise ValueError(f"unexpected split value(s): {bad_splits}")
+    for t in tasks:
+        vals = set(df[t].dropna().astype(int).unique())
+        bad = vals - set(range(TASK_NUM_CLASSES[t]))
+        if bad:
+            raise ValueError(f"{t}: unexpected class value(s) {sorted(bad)}")
 
     if splits is not None:
         df = df[df["split"].isin(list(splits))].copy()
@@ -80,21 +76,37 @@ def load_records(
     return df.reset_index(drop=True)
 
 
-def label_stats(df: pd.DataFrame, tasks: Sequence[str]) -> dict[str, dict[str, float]]:
-    """Per-task mean/std computed on the *train* split (NaN-safe)."""
-    stats: dict[str, dict[str, float]] = {}
+def make_labels(df: pd.DataFrame, tasks: Sequence[str]) -> np.ndarray:
+    """``[N, K]`` int64 labels with ``-1`` for missing values."""
+    out = np.full((len(df), len(tasks)), -1, dtype=np.int64)
+    for j, t in enumerate(tasks):
+        col = df[t].to_numpy()
+        valid = ~pd.isna(col)
+        out[valid, j] = col[valid].astype(np.int64)
+    return out
+
+
+def class_stats(df: pd.DataFrame, tasks: Sequence[str]) -> dict[str, dict]:
+    """Per-task class counts and balanced class weights computed on train."""
+    stats: dict[str, dict] = {}
     for t in tasks:
-        col = df.loc[df["split"] == "train", t].dropna().astype(float)
-        mean = float(col.mean()) if len(col) else 0.0
-        std = float(col.std(ddof=0)) if len(col) else 1.0
-        if not np.isfinite(std) or std < 1e-8:
-            std = 1.0
-        stats[t] = {"mean": mean, "std": std, "n_train": int(len(col))}
+        n_classes = TASK_NUM_CLASSES[t]
+        col = df.loc[df["split"] == "train", t].dropna().astype(int)
+        counts = [int((col == c).sum()) for c in range(n_classes)]
+        n = int(sum(counts))
+        weights = [float(n / (n_classes * c)) if c > 0 else 0.0 for c in counts]
+        stats[t] = {
+            "num_classes": n_classes,
+            "class_names": CLASS_NAMES[t],
+            "train_counts": counts,
+            "train_freq": [c / n if n else 0.0 for c in counts],
+            "class_weights": weights,
+            "n_train": n,
+        }
     return stats
 
 
 def save_split_manifest(df: pd.DataFrame, path: str | Path) -> None:
-    """Persist the (fixed) split assignment for reproducibility."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     cols = [c for c in ("row_id", "subject_id", "study_id", "measurement_id", "split") if c in df.columns]
@@ -111,7 +123,7 @@ def sample_indices(num_frames: int, count: int) -> np.ndarray:
         raise ValueError("num_frames must be positive")
     if num_frames >= count:
         idx = np.linspace(0, num_frames - 1, count)
-    else:  # very short clip: repeat the last frame
+    else:
         idx = np.concatenate([np.arange(num_frames), np.full(count - num_frames, num_frames - 1)])
     return np.clip(np.round(idx).astype(np.int64), 0, num_frames - 1)
 
@@ -137,7 +149,6 @@ def decode_video(path: str | Path, num_frames: int) -> np.ndarray:
 
 
 def resize_uint8_frames(frames: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-    """Bilinear resize of a ``[T, 3, H, W]`` uint8 tensor."""
     if tuple(frames.shape[-2:]) == tuple(size):
         return frames
     out = torch.nn.functional.interpolate(
@@ -149,7 +160,7 @@ def resize_uint8_frames(frames: torch.Tensor, size: tuple[int, int]) -> torch.Te
 # ---------------------------------------------------------------------------
 # Dataset
 # ---------------------------------------------------------------------------
-class VideoRegressionDataset(Dataset):
+class VideoClassificationDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
@@ -185,7 +196,7 @@ class VideoRegressionDataset(Dataset):
             tensor = resize_uint8_frames(tensor, self.image_size)
 
         labels = torch.tensor(
-            [np.nan if pd.isna(rec[t]) else float(rec[t]) for t in self.tasks], dtype=torch.float32
+            [-1 if pd.isna(rec[t]) else int(rec[t]) for t in self.tasks], dtype=torch.int64
         )
         meta = {
             "row_id": int(rec["row_id"]),
@@ -199,17 +210,8 @@ class VideoRegressionDataset(Dataset):
 
 
 def collate_batch(items: list[dict]) -> dict:
-    """Stack frames / labels and keep metadata as python lists."""
     frames = torch.stack([it["frames"] for it in items], dim=0)  # [B,T,3,H,W]
     labels = torch.stack([it["labels"] for it in items], dim=0)  # [B,K]
     keys = items[0]["meta"].keys()
     meta = {k: [it["meta"][k] for it in items] for k in keys}
     return {"frames": frames, "labels": labels, "meta": meta}
-
-
-def dataframe_from_records(
-    df: pd.DataFrame, tasks: Sequence[str], indices: Iterable[int] | None = None
-) -> pd.DataFrame:
-    if indices is not None:
-        df = df.iloc[list(indices)]
-    return df.reset_index(drop=True)

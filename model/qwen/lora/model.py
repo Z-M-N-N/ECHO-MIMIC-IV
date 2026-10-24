@@ -1,4 +1,4 @@
-"""Qwen2.5-VL vision tower with LoRA adapters + MLP regression head."""
+"""Qwen2.5-VL vision tower with LoRA adapters + multi-task MLP classifier."""
 from __future__ import annotations
 
 import sys
@@ -11,12 +11,13 @@ ROOT = next(p for p in Path(__file__).resolve().parents if (p / "common" / "__in
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from common.mlp import MLPHead  # noqa: E402
+from common.data import TASK_NUM_CLASSES  # noqa: E402
+from common.mlp import MLPClassifier  # noqa: E402
 from common.qwen_vision import QwenVisionEncoder, count_trainable, inject_lora  # noqa: E402
 
 
-class QwenLoraRegressor(nn.Module):
-    """Frozen vision tower + LoRA adapters + MLP head (end-to-end training)."""
+class QwenLoraClassifier(nn.Module):
+    """Frozen vision tower + LoRA adapters + multi-task MLP classifier."""
 
     def __init__(self, cfg: dict, device="cpu") -> None:
         super().__init__()
@@ -42,9 +43,15 @@ class QwenLoraRegressor(nn.Module):
             target_modules=tuple(lora_cfg.get("target_modules", ["attn.qkv", "attn.proj"])),
             layers=lora_cfg.get("layers"),
         )
-        self.head = MLPHead(
+        tasks = list(cfg["tasks"])
+        num_classes = {
+            t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES[t])) for t in tasks
+        }
+        self.tasks = tasks
+        self.num_classes = num_classes
+        self.head = MLPClassifier(
             in_dim=self.encoder.out_dim,
-            out_dim=int(cfg.get("num_tasks", len(cfg["tasks"]))),
+            num_classes=num_classes,
             hidden_dims=tuple(head_cfg.get("hidden_dims", [512, 256])),
             dropout=float(head_cfg.get("dropout", 0.2)),
             activation=str(head_cfg.get("activation", "gelu")),
@@ -61,8 +68,8 @@ class QwenLoraRegressor(nn.Module):
 
     def forward(self, frames: torch.Tensor, return_features: bool = False):
         features = self.encoder(frames)
-        preds = self.head(features.float())
-        return (preds, features) if return_features else preds
+        logits = self.head(features.float())
+        return (logits, features) if return_features else logits
 
     def trainable_summary(self) -> dict:
         lora_trainable, lora_total = count_trainable(self.encoder.visual)
