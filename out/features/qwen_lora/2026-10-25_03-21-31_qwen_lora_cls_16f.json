@@ -1,0 +1,59 @@
+{
+  "tag": "2026-10-25_03-21-31_qwen_lora_cls_16f",
+  "kind": "qwen_lora",
+  "task_type": "classification",
+  "run_dir": "/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f",
+  "adapter_dir": "/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f/adapter",
+  "num_frames": 16,
+  "image_size": 224,
+  "pooling": "mean",
+  "feature_dim": 2048,
+  "dtype": "float16",
+  "n_samples": 6557,
+  "tasks": [
+    "cls_rv_function",
+    "cls_la_size",
+    "cls_ra_size"
+  ],
+  "num_classes": {
+    "cls_rv_function": 2,
+    "cls_la_size": 2,
+    "cls_ra_size": 2
+  },
+  "class_names": {
+    "cls_rv_function": [
+      "0",
+      "1"
+    ],
+    "cls_la_size": [
+      "0",
+      "1"
+    ],
+    "cls_ra_size": [
+      "0",
+      "1"
+    ]
+  },
+  "trainable": {
+    "lora_trainable": 1966080,
+    "lora_total": 670650368,
+    "head_trainable": 1186054,
+    "head_total": 1186054,
+    "trainable_params": 3152134,
+    "total_params": 671836422
+  },
+  "git": {
+    "commit": "311fa5270aede47324d47e96eb211f71d3ea22a7",
+    "dirty": true,
+    "branch": "cls"
+  },
+  "environment": {
+    "python": "3.10.22",
+    "torch": "2.5.1+cu124",
+    "cuda_available": true,
+    "cuda_version": "12.4",
+    "gpu_count": 1,
+    "cuda_visible_devices": "3"
+  },
+  "created": "2026-10-25T04:30:33"
+}

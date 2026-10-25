@@ -44,6 +44,8 @@ CUDA_VISIBLE_DEVICES=<卡号> python train.py --config config.yaml --device cuda
 
 ### A. Qwen 冻结视觉塔 + MLP
 
+当前 `config.yaml` 使用 **16 帧**（8/16/32 帧对比结论：16 帧最优，32 帧退化）。
+
 ```bash
 cd model/qwen/linear_probe
 python extract_features.py --config config.yaml --device cuda   # 可选；train.py 会自动补

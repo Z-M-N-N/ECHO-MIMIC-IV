@@ -15,7 +15,7 @@ num_classes:
 encoder:
   model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
   vision_tower_only: true      # 只加载 visual.*，不加载语言模型
-  num_frames: 8                # 需为偶数（temporal_patch_size=2）
+  num_frames: 16               # 16 帧最优（8/16/32 对比结论）；需为偶数
   image_size: 224              # 需为 28 的倍数
   pooling: mean                # mean | max | mean_std
   dtype: bfloat16
@@ -48,4 +48,4 @@ train:
 
 output:
   root: /home/mzhao/ECHO-MIMIC-IV/out
-  run_name: qwen_linear_probe_cls
+  run_name: qwen_linear_probe_16f

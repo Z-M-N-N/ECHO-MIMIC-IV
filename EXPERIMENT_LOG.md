@@ -43,3 +43,39 @@ cls_ra_size            544  0.6195  0.6195  0.6785  0.6270  0.6267  0.6967  0.55
 macro                       0.6296  0.6010  0.6689  0.6044  0.6147
 ```
 - 结论与备注：特征缓存 /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_linear_probe/qwen2vl3b_8f_224px_mean_frozen.npz；最佳 epoch=50；详细指标见 metrics.json。
+
+## [2026-10-25 01:27] Qwen2.5-VL 冻结视觉塔 + MLP 分类（qwen_linear_probe_16f）
+
+- 目的：仅加载 Qwen2.5-VL 视觉塔并冻结，缓存 pooled 特征后训练 MLP 多任务分类头；报告 Accuracy/macro-F1/macro-AUC 与混淆矩阵。
+- 执行命令：model/qwen/linear_probe/train.py --config model/qwen/linear_probe/config_16f.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, pooling=mean, hidden=[512, 256], lr=0.001, bs=128, epochs=200, class_weight=balanced, best_epoch=59
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_linear_probe/2026-10-25_01-20-31_qwen_linear_probe_16f
+- 结果/指标：
+```
+test macro Acc=0.6684, F1=0.6292, AUC=0.6955
+task                     n     Acc     F1m    AUCm      Pm      Rm    Sens    Spec
+cls_rv_function        647  0.7419  0.6334  0.7078  0.6261  0.6463  0.4848  0.8078
+cls_la_size            582  0.6512  0.6485  0.7135  0.6525  0.6493  0.5795  0.7191
+cls_ra_size            544  0.6121  0.6058  0.6653  0.6068  0.6055  0.5410  0.6700
+macro                       0.6684  0.6292  0.6955  0.6285  0.6337
+```
+- 结论与备注：特征缓存 /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_linear_probe/qwen2vl3b_16f_224px_mean_frozen.npz；最佳 epoch=59；详细指标见 metrics.json。
+
+## [2026-10-25 04:30] Qwen2.5-VL 视觉塔 LoRA + MLP 分类（qwen_lora_cls_16f）
+
+- 目的：仅加载 Qwen2.5-VL 视觉塔，在注意力 qkv/proj 注入 LoRA，与 MLP 分类头联合训练。
+- 执行命令：model/qwen/lora/train.py --config model/qwen/lora/config.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, lora_r=8, alpha=16, lr_lora=0.0001, lr_head=0.0003, bs=4x2, epochs=4, best_epoch=3, trainable=3152134
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f
+- 结果/指标：
+```
+test macro Acc=0.6826, F1=0.6473, AUC=0.7250
+task                     n     Acc     F1m    AUCm      Pm      Rm    Sens    Spec
+cls_rv_function        647  0.7372  0.6345  0.7373  0.6263  0.6518  0.5076  0.7961
+cls_la_size            582  0.6615  0.6593  0.7250  0.6626  0.6598  0.5972  0.7224
+cls_ra_size            544  0.6489  0.6480  0.7126  0.6491  0.6507  0.6680  0.6333
+macro                       0.6826  0.6473  0.7250  0.6460  0.6541
+```
+- 结论与备注：adapter -> /home/mzhao/ECHO-MIMIC-IV/out/results/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f/adapter；特征 -> /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f.npz；最佳 epoch=3。

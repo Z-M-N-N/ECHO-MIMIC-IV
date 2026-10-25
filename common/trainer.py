@@ -28,9 +28,11 @@ def masked_ce_loss(
         valid = y >= 0
         if not valid.any():
             continue
-        z = logits[task][valid]
+        z = logits[task][valid].float()  # fp32 loss even under bf16 autocast
         t = y[valid]
         w = class_weights.get(task) if class_weights else None
+        if w is not None:
+            w = w.to(dtype=z.dtype)
         ce = F.cross_entropy(z, t, weight=w, reduction="none")
         if focal_gamma and focal_gamma > 0:
             pt = torch.exp(-F.cross_entropy(z, t, reduction="none"))

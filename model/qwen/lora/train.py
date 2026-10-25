@@ -140,6 +140,13 @@ def main() -> None:
 
     # --- model + optimizer --------------------------------------------------
     model = QwenLoraClassifier(cfg, device=device)
+
+    init_head = tr_cfg.get("init_head")
+    if init_head:
+        ckpt = torch.load(str(init_head), map_location="cpu", weights_only=False)
+        model.head.load_state_dict(ckpt["state_dict"])
+        logger.info(f"initialized MLP head from frozen-feature run: {init_head}")
+
     summary = model.trainable_summary()
     logger.info(f"trainable summary: {json.dumps(summary)}")
     dump_json(summary, run_dir / "trainable_params.json")
@@ -170,8 +177,19 @@ def main() -> None:
     focal_gamma = float(tr_cfg.get("focal_gamma", 0.0))
     kind = str(tr_cfg.get("loss", "ce")).lower()
 
-    history = {"train_loss": [], "val_loss": [], "val_macro_f1": [], "val_accuracy": [], "lr": []}
-    best_epoch, best_score, best_lora, best_head = 0, float("-inf"), None, None
+    history = {"train_loss": [], "val_loss": [], "val_macro_f1": [], "val_macro_auc": [], "val_accuracy": [], "lr": []}
+
+    # Baseline with the loaded head and zero-initialised LoRA.  This guarantees
+    # the final model is never worse than the frozen-feature baseline.
+    base_out = evaluate(model, val_loader, tasks, cfg["num_classes"], device, amp_dtype, class_weights)
+    base_metrics = masked_classification_metrics(base_out["labels"], base_out["probs"], tasks, cfg["num_classes"])
+    best_score = float(base_metrics["macro"]["macro_f1"])
+    best_epoch = 0
+    stopper.best = best_score
+    best_lora = {k: v.detach().cpu().clone() for k, v in model.encoder.visual.state_dict().items() if "lora_" in k}
+    best_head = {k: v.detach().cpu().clone() for k, v in model.head.state_dict().items()}
+    logger.info(f"baseline (frozen head + zero LoRA): val_F1m {best_score:.4f}, "
+                f"val_AUCm {base_metrics['macro']['macro_auc']:.4f}")
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -206,15 +224,17 @@ def main() -> None:
         val_out = evaluate(model, val_loader, tasks, cfg["num_classes"], device, amp_dtype, class_weights)
         val_metrics = masked_classification_metrics(val_out["labels"], val_out["probs"], tasks, cfg["num_classes"])
         val_f1 = float(val_metrics["macro"]["macro_f1"])
+        val_auc = float(val_metrics["macro"]["macro_auc"])
         val_acc = float(val_metrics["macro"]["accuracy"])
         history["train_loss"].append(meter.avg)
         history["val_loss"].append(val_out["loss"])
         history["val_macro_f1"].append(val_f1)
+        history["val_macro_auc"].append(val_auc)
         history["val_accuracy"].append(val_acc)
         history["lr"].append(float(opt.param_groups[0]["lr"]))
         logger.info(f"epoch {epoch:3d}/{epochs} | train {meter.avg:.5f} | val {val_out['loss']:.5f} | "
-                    f"val_F1m {val_f1:.4f} | val_Acc {val_acc:.4f} | lr {opt.param_groups[0]['lr']:.2e} | "
-                    f"{time.time() - t0:.0f}s")
+                    f"val_F1m {val_f1:.4f} | val_AUCm {val_auc:.4f} | val_Acc {val_acc:.4f} | "
+                    f"lr {opt.param_groups[0]['lr']:.2e} | {time.time() - t0:.0f}s")
 
         if stopper.step(val_f1, epoch):
             best_epoch, best_score = epoch, val_f1
