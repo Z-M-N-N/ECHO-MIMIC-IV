@@ -1,0 +1,34 @@
+{
+  "view": "Apical_Doppler",
+  "tag": "qwen2vl3b_16f_224px_mean",
+  "features": 6142,
+  "feature_dim": 2048,
+  "dtype": "float16",
+  "num_frames": 16,
+  "image_size": 224,
+  "pooling": "mean",
+  "vision_tower_only": true,
+  "load_info": {
+    "model_path": "/mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B",
+    "vision_keys_loaded": 390,
+    "missing": 0,
+    "unexpected": 0,
+    "dtype": "torch.bfloat16",
+    "attn_implementation": "sdpa",
+    "out_hidden_size": 2048
+  },
+  "git": {
+    "commit": "91b7785d0f52d09b96b78b568a0ff80d5dff2384",
+    "dirty": true,
+    "branch": "reg_mult_view"
+  },
+  "environment": {
+    "python": "3.10.22",
+    "torch": "2.5.1+cu124",
+    "cuda_available": true,
+    "cuda_version": "12.4",
+    "gpu_count": 1,
+    "cuda_visible_devices": "1"
+  },
+  "created": "2026-10-25T21:13:41"
+}

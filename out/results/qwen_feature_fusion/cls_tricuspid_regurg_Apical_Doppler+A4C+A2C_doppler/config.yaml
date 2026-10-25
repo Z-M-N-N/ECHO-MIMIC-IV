@@ -1,0 +1,90 @@
+seed: 42
+task: cls_tricuspid_regurg
+views:
+  A4C:
+    csv: /home/mzhao/ECHO-MIMIC-IV/data/A4C/classification.csv
+  A2C:
+    csv: /home/mzhao/ECHO-MIMIC-IV/data/A2C/classification.csv
+  Apical_Doppler:
+    csv: /home/mzhao/ECHO-MIMIC-IV/data/Apical_Doppler/classification.csv
+num_classes:
+  cls_mitral_regurg: 2
+  cls_tricuspid_regurg: 2
+  cls_rv_function: 2
+  cls_la_size: 2
+  cls_ra_size: 2
+encoder:
+  model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
+  vision_tower_only: true
+  num_frames: 16
+  image_size: 224
+  pooling: mean
+  dtype: bfloat16
+  attn_implementation: sdpa
+  batch_size: 8
+  num_workers: 8
+feature:
+  dir: /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_feature_fusion
+  tag: qwen2vl3b_16f_224px_mean
+groups:
+- name: Apical_Doppler
+  views:
+  - Apical_Doppler
+  fusion: single
+- name: A4C
+  views:
+  - A4C
+  fusion: single
+- name: A2C
+  views:
+  - A2C
+  fusion: single
+- name: Apical_Doppler+A4C
+  views:
+  - Apical_Doppler
+  - A4C
+  fusion: concat
+- name: Apical_Doppler+A2C
+  views:
+  - Apical_Doppler
+  - A2C
+  fusion: concat
+- name: Apical_Doppler+A4C+A2C
+  views:
+  - Apical_Doppler
+  - A4C
+  - A2C
+  fusion: concat
+- name: Apical_Doppler+A4C+A2C_mean
+  views:
+  - Apical_Doppler
+  - A4C
+  - A2C
+  fusion: mean
+- name: Apical_Doppler+A4C+A2C_attention
+  views:
+  - Apical_Doppler
+  - A4C
+  - A2C
+  fusion: attention
+head:
+  hidden_dims:
+  - 512
+  - 256
+  dropout: 0.2
+  activation: gelu
+  input_norm: true
+train:
+  batch_size: 128
+  epochs: 200
+  lr: 0.001
+  weight_decay: 0.0001
+  class_weight: balanced
+  focal_gamma: 0.0
+  grad_clip: 5.0
+  patience: 25
+  min_delta: 0.0001
+output:
+  root: /home/mzhao/ECHO-MIMIC-IV/out
+  name_suffix: _doppler
+label_view: Apical_Doppler

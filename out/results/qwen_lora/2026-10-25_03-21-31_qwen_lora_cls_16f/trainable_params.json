@@ -1,8 +1,0 @@
-{
-  "lora_trainable": 1966080,
-  "lora_total": 670650368,
-  "head_trainable": 1186054,
-  "head_total": 1186054,
-  "trainable_params": 3152134,
-  "total_params": 671836422
-}

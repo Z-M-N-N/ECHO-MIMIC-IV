@@ -1,1 +1,1 @@
-"""Shared utilities for the ECHO-MIMIC-IV classification subprojects."""
+"""Shared utilities for the Qwen multi-view feature-fusion project."""

@@ -1,0 +1,67 @@
+# Qwen2.5-VL frozen vision tower + multi-view feature fusion + MLP
+seed: 42
+task: cls_la_size            # cls_rv_function | cls_la_size | cls_ra_size
+
+views:
+  A4C:
+    csv: /home/mzhao/ECHO-MIMIC-IV/data/A4C/classification.csv
+  A2C:
+    csv: /home/mzhao/ECHO-MIMIC-IV/data/A2C/classification.csv
+
+num_classes:
+  cls_rv_function: 2
+  cls_la_size: 2
+  cls_ra_size: 2
+
+encoder:
+  model_path: /mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B
+  vision_tower_only: true
+  num_frames: 16
+  image_size: 224
+  pooling: mean
+  dtype: bfloat16
+  attn_implementation: sdpa
+  batch_size: 8
+  num_workers: 8
+
+feature:
+  dir: /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_feature_fusion
+  tag: qwen2vl3b_16f_224px_mean
+
+# 所有组使用完全相同的 study 子集、划分与 seed
+groups:
+  - name: A4C
+    views: [A4C]
+    fusion: single
+  - name: A2C
+    views: [A2C]
+    fusion: single
+  - name: A4C+A2C
+    views: [A4C, A2C]
+    fusion: concat
+  - name: A4C+A2C_mean
+    views: [A4C, A2C]
+    fusion: mean
+  - name: A4C+A2C_attention
+    views: [A4C, A2C]
+    fusion: attention
+
+head:
+  hidden_dims: [512, 256]
+  dropout: 0.2
+  activation: gelu
+  input_norm: true
+
+train:
+  batch_size: 128
+  epochs: 200
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  class_weight: balanced  # balanced | none
+  focal_gamma: 0.0
+  grad_clip: 5.0
+  patience: 25
+  min_delta: 1.0e-4
+
+output:
+  root: /home/mzhao/ECHO-MIMIC-IV/out
