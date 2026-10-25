@@ -1,0 +1,10 @@
+视角 A4C  study=6766  保留回归=6 分类=3
+  reg lvef                   4293(63%)
+  reg la_4ch_length          5968(88%)
+  reg ra_length              5967(88%)
+  reg la_vol                 4866(72%)
+  reg biplane_lvedv          1506(22%)
+  reg biplane_lvesv          1363(20%)
+  cls rv_function            6380(94%)
+  cls la_size                5693(84%)
+  cls ra_size                5474(81%)

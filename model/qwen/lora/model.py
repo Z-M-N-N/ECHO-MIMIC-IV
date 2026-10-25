@@ -45,7 +45,7 @@ class QwenLoraClassifier(nn.Module):
         )
         tasks = list(cfg["tasks"])
         num_classes = {
-            t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES[t])) for t in tasks
+            t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES.get(t, 2))) for t in tasks
         }
         self.tasks = tasks
         self.num_classes = num_classes

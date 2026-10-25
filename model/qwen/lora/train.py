@@ -110,7 +110,7 @@ def main() -> None:
     tasks = list(cfg.get("tasks") or TASK_COLS)
     cfg["tasks"] = tasks
     cfg["num_classes"] = {
-        t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES[t])) for t in tasks
+        t: int(cfg.get("num_classes", {}).get(t, TASK_NUM_CLASSES.get(t, 2))) for t in tasks
     }
     if args.epochs is not None:
         cfg["train"]["epochs"] = int(args.epochs)
@@ -124,7 +124,7 @@ def main() -> None:
 
     df_all = load_records(cfg["csv"], tasks)
     save_split_manifest(df_all, run_dir / "split_manifest.csv")
-    stats = class_stats(df_all, tasks)
+    stats = class_stats(df_all, tasks, cfg.get("num_classes"))
     dump_json(stats, run_dir / "label_stats.json")
 
     tr_cfg = cfg["train"]
@@ -275,10 +275,10 @@ def main() -> None:
         suffix = "" if name == "test" else "_val"
         for j, task in enumerate(tasks):
             m = results[name]["per_task"][task]
-            plot_confusion_matrix(np.asarray(m["confusion_matrix"]), CLASS_NAMES[task], task,
+            plot_confusion_matrix(np.asarray(m["confusion_matrix"]), [str(i) for i in range(cfg["num_classes"][task])], task,
                                   fig_dir / f"confusion_matrix{suffix}_{task}.png")
             plot_roc_curve(idx_df[task].to_numpy(dtype=np.float64), all_probs[name][task], task,
-                           fig_dir / f"roc_curve{suffix}_{task}.png", CLASS_NAMES[task])
+                           fig_dir / f"roc_curve{suffix}_{task}.png", [str(i) for i in range(cfg["num_classes"][task])])
             if name == "test":
                 plot_pred_distribution(idx_df[task].to_numpy(dtype=np.float64), all_probs[name][task], task,
                                        fig_dir / f"pred_dist_{task}.png")

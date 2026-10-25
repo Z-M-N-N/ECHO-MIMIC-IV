@@ -69,7 +69,7 @@ def extract(
 ) -> Path:
     enc_cfg = cfg["encoder"]
     feature_dir = Path(cfg["feature"]["dir"]).expanduser()
-    tag = tag or default_tag(cfg)
+    tag = tag or cfg.get("feature", {}).get("tag") or default_tag(cfg)
     if max_videos and tag == default_tag(cfg):
         tag = f"{tag}_n{max_videos}"
     feature_dir.mkdir(parents=True, exist_ok=True)
@@ -136,8 +136,9 @@ def extract(
             "n_samples": int(features.shape[0]),
             "task_type": "classification",
             "tasks": cfg["tasks"],
-            "num_classes": {t: TASK_NUM_CLASSES[t] for t in cfg["tasks"]},
-            "class_names": {t: CLASS_NAMES[t] for t in cfg["tasks"]},
+            "num_classes": {t: int(cfg.get("num_classes", {}).get(t, 2)) for t in cfg["tasks"]},
+            "class_names": {t: [str(i) for i in range(int(cfg.get("num_classes", {}).get(t, 2)))]
+                            for t in cfg["tasks"]},
             "load_info": encoder.load_info,
             "git": git_info(ROOT),
             "environment": environment_snapshot(),
@@ -151,7 +152,7 @@ def extract(
 
 def merge_shards(cfg: dict, logger, tag: str | None = None, num_shards: int = 1) -> Path:
     feature_dir = Path(cfg["feature"]["dir"]).expanduser()
-    tag = tag or default_tag(cfg)
+    tag = tag or cfg.get("feature", {}).get("tag") or default_tag(cfg)
     paths = [feature_dir / f"{tag}_shard{i}of{num_shards}.npz" for i in range(num_shards)]
     missing = [str(p) for p in paths if not p.exists()]
     if missing:

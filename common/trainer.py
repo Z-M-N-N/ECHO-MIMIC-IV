@@ -221,8 +221,12 @@ def save_predictions(
                 row[f"prob_{c}"] = float(v)
             rows.append(row)
     out = pd.DataFrame(rows)
-    out["y_true"] = out["y_true"].astype("Int64")
-    out["y_pred"] = out["y_pred"].astype("Int64")
+    if len(out):
+        out["y_true"] = out["y_true"].astype("Int64")
+        out["y_pred"] = out["y_pred"].astype("Int64")
+    else:
+        out = pd.DataFrame(columns=["row_id", "subject_id", "study_id", "measurement_id",
+                                    "video_path", "split", "task", "y_true", "y_pred"])
     path.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(path, index=False)
     return out

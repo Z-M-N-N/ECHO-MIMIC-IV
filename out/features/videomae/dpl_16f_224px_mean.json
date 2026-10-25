@@ -1,0 +1,43 @@
+{
+  "tag": "dpl_16f_224px_mean",
+  "kind": "videomae",
+  "weights": "/home/mzhao/模型权重/VideoMAE/pytorch_model.bin",
+  "weights_mtime": "2026-10-24T22:27:20.228897",
+  "num_frames": 16,
+  "image_size": 224,
+  "pooling": "mean",
+  "feature_dim": 768,
+  "dtype": "float16",
+  "n_samples": 2838,
+  "task_type": "classification",
+  "tasks": [
+    "cls_aortic_regurg"
+  ],
+  "num_classes": {
+    "cls_aortic_regurg": 2
+  },
+  "class_names": {
+    "cls_aortic_regurg": [
+      "0",
+      "1"
+    ]
+  },
+  "load_info": {
+    "missing": 0,
+    "unexpected": 0
+  },
+  "git": {
+    "commit": "fb4a0faac6c1113c8448cb1253775e5c56ba923b",
+    "dirty": true,
+    "branch": "cls"
+  },
+  "environment": {
+    "python": "3.10.22",
+    "torch": "2.5.1+cu124",
+    "cuda_available": true,
+    "cuda_version": "12.4",
+    "gpu_count": 1,
+    "cuda_visible_devices": "1"
+  },
+  "created": "2026-10-25T17:35:58"
+}

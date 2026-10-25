@@ -17,7 +17,7 @@ Each item returned by :class:`VideoClassificationDataset` is::
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -53,9 +53,6 @@ def load_records(
     df["split"] = df["split"].astype(str).str.lower()
 
     tasks = list(tasks) if tasks is not None else list(TASK_COLS)
-    unknown = [t for t in tasks if t not in TASK_COLS]
-    if unknown:
-        raise ValueError(f"unknown task column(s): {unknown}; available={list(TASK_COLS)}")
     missing_cols = [c for c in ("video_path", "split", *tasks) if c not in df.columns]
     if missing_cols:
         raise ValueError(f"missing column(s) in {csv_path}: {missing_cols}")
@@ -64,10 +61,9 @@ def load_records(
     if bad_splits:
         raise ValueError(f"unexpected split value(s): {bad_splits}")
     for t in tasks:
-        vals = set(df[t].dropna().astype(int).unique())
-        bad = vals - set(range(TASK_NUM_CLASSES[t]))
-        if bad:
-            raise ValueError(f"{t}: unexpected class value(s) {sorted(bad)}")
+        vals = df[t].dropna()
+        if (vals < 0).any() or (vals % 1 != 0).any():
+            raise ValueError(f"{t}: labels must be non-negative integers")
 
     if splits is not None:
         df = df[df["split"].isin(list(splits))].copy()
@@ -86,18 +82,28 @@ def make_labels(df: pd.DataFrame, tasks: Sequence[str]) -> np.ndarray:
     return out
 
 
-def class_stats(df: pd.DataFrame, tasks: Sequence[str]) -> dict[str, dict]:
-    """Per-task class counts and balanced class weights computed on train."""
+def class_stats(
+    df: pd.DataFrame, tasks: Sequence[str], num_classes: Mapping[str, int] | None = None
+) -> dict[str, dict]:
+    """Per-task class counts and balanced class weights computed on train.
+
+    ``num_classes`` may be supplied by the config; otherwise it is inferred
+    from the observed label values.
+    """
     stats: dict[str, dict] = {}
     for t in tasks:
-        n_classes = TASK_NUM_CLASSES[t]
+        if num_classes and t in num_classes:
+            n_classes = int(num_classes[t])
+        else:
+            observed = df[t].dropna().astype(int)
+            n_classes = int(observed.max()) + 1 if len(observed) else 2
         col = df.loc[df["split"] == "train", t].dropna().astype(int)
         counts = [int((col == c).sum()) for c in range(n_classes)]
         n = int(sum(counts))
         weights = [float(n / (n_classes * c)) if c > 0 else 0.0 for c in counts]
         stats[t] = {
             "num_classes": n_classes,
-            "class_names": CLASS_NAMES[t],
+            "class_names": [str(i) for i in range(n_classes)],
             "train_counts": counts,
             "train_freq": [c / n if n else 0.0 for c in counts],
             "class_weights": weights,

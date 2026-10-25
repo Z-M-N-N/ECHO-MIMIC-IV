@@ -79,3 +79,69 @@ cls_ra_size            544  0.6489  0.6480  0.7126  0.6491  0.6507  0.6680  0.63
 macro                       0.6826  0.6473  0.7250  0.6460  0.6541
 ```
 - 结论与备注：adapter -> /home/mzhao/ECHO-MIMIC-IV/out/results/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f/adapter；特征 -> /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_lora/2026-10-25_03-21-31_qwen_lora_cls_16f.npz；最佳 epoch=3。
+
+## [2026-10-25 17:14] VideoMAE 冻结特征 + MLP 分类（videomae_apical_doppler）
+
+- 目的：VideoMAE 冻结 backbone 提取特征，训练 MLP 多任务分类头；报告 Accuracy/macro-F1/macro-AUC 与混淆矩阵。
+- 执行命令：model/videomae/train.py --config model/videomae/config_apical_doppler.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, pooling=mean, hidden=[512, 256], lr=0.001, bs=128, epochs=200, class_weight=balanced, best_epoch=47
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/Apical_Doppler/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/videomae/2026-10-25_17-11-42_videomae_apical_doppler
+- 结果/指标：
+```
+test macro Acc=0.7682, F1=0.7201, AUC=0.8189
+task                     n     Acc     F1m    AUCm      Pm      Rm    Sens    Spec
+cls_mitral_regurg      673  0.7801  0.7368  0.8287  0.7238  0.7715  0.7545  0.7885
+cls_tricuspid_regurg   665  0.7564  0.7034  0.8091  0.6919  0.7424  0.7161  0.7686
+macro                       0.7682  0.7201  0.8189  0.7078  0.7569
+```
+- 结论与备注：特征缓存 /home/mzhao/ECHO-MIMIC-IV/out/features/videomae/apical_doppler_16f_224px_mean.npz；最佳 epoch=47；详细指标见 metrics.json。
+
+## [2026-10-25 17:26] Qwen2.5-VL 冻结视觉塔 + MLP 分类（qwen_linear_probe_apical_doppler）
+
+- 目的：仅加载 Qwen2.5-VL 视觉塔并冻结，缓存 pooled 特征后训练 MLP 多任务分类头；报告 Accuracy/macro-F1/macro-AUC 与混淆矩阵。
+- 执行命令：model/qwen/linear_probe/train.py --config model/qwen/linear_probe/config_apical_doppler.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, pooling=mean, hidden=[512, 256], lr=0.001, bs=128, epochs=200, class_weight=balanced, best_epoch=52
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/Apical_Doppler/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_linear_probe/2026-10-25_17-11-42_qwen_linear_probe_apical_doppler
+- 结果/指标：
+```
+test macro Acc=0.7504, F1=0.6730, AUC=0.7572
+task                     n     Acc     F1m    AUCm      Pm      Rm    Sens    Spec
+cls_mitral_regurg      673  0.7489  0.6642  0.7435  0.6639  0.6645  0.4970  0.8320
+cls_tricuspid_regurg   665  0.7519  0.6818  0.7709  0.6721  0.7013  0.6065  0.7961
+macro                       0.7504  0.6730  0.7572  0.6680  0.6829
+```
+- 结论与备注：特征缓存 /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_linear_probe/apical_doppler_qwen16f_224px_mean.npz；最佳 epoch=52；详细指标见 metrics.json。
+
+## [2026-10-25 17:36] VideoMAE 冻结特征 + MLP 分类（videomae_dpl）
+
+- 目的：VideoMAE 冻结 backbone 提取特征，训练 MLP 多任务分类头；报告 Accuracy/macro-F1/macro-AUC 与混淆矩阵。
+- 执行命令：model/videomae/train.py --config model/videomae/config_dpl.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, pooling=mean, hidden=[512, 256], lr=0.001, bs=128, epochs=200, class_weight=balanced, best_epoch=26
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/Doppler_Parasternal_Long/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/videomae/2026-10-25_17-35-11_videomae_dpl
+- 结果/指标：
+```
+test macro Acc=0.8000, F1=0.5289, AUC=0.5838
+task                     n     Acc     F1m    AUCm      Pm      Rm    Sens    Spec
+cls_aortic_regurg      290  0.8000  0.5289  0.5838  0.5408  0.5273  0.1395  0.9150
+macro                       0.8000  0.5289  0.5838  0.5408  0.5273
+```
+- 结论与备注：特征缓存 /home/mzhao/ECHO-MIMIC-IV/out/features/videomae/dpl_16f_224px_mean.npz；最佳 epoch=26；详细指标见 metrics.json。
+
+## [2026-10-25 17:41] Qwen2.5-VL 冻结视觉塔 + MLP 分类（qwen_linear_probe_dpl）
+
+- 目的：仅加载 Qwen2.5-VL 视觉塔并冻结，缓存 pooled 特征后训练 MLP 多任务分类头；报告 Accuracy/macro-F1/macro-AUC 与混淆矩阵。
+- 执行命令：model/qwen/linear_probe/train.py --config model/qwen/linear_probe/config_dpl.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, pooling=mean, hidden=[512, 256], lr=0.001, bs=128, epochs=200, class_weight=balanced, best_epoch=35
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/Doppler_Parasternal_Long/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_linear_probe/2026-10-25_17-35-12_qwen_linear_probe_dpl
+- 结果/指标：
+```
+test macro Acc=0.7828, F1=0.5480, AUC=0.6690
+task                     n     Acc     F1m    AUCm      Pm      Rm    Sens    Spec
+cls_aortic_regurg      290  0.7828  0.5480  0.6690  0.5510  0.5459  0.2093  0.8826
+macro                       0.7828  0.5480  0.6690  0.5510  0.5459
+```
+- 结论与备注：特征缓存 /home/mzhao/ECHO-MIMIC-IV/out/features/qwen_linear_probe/dpl_qwen16f_224px_mean.npz；最佳 epoch=35；详细指标见 metrics.json。
