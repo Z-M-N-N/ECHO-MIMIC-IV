@@ -170,3 +170,19 @@ group                  views    fusion  best_epoch  test_acc  test_macro_f1  tes
 Apical_Doppler+A4C+A2C_attention Apical_Doppler+A4C+A2C attention           2  0.682805       0.625102        0.714912          0.608392          0.706140              0.622759           0.657266      0.003339     0.013905      0.026116      0.000000     0.001169      0.026638
 ```
 - 结论与备注：融合是否优于单视角见 comparison 表；所有实验使用相同 study 子集与划分。
+
+## [2026-10-26 05:13] Qwen 端到端 LoRA 分类（cls_la_size）
+
+- 目的：A4C/A2C 单视角与 A4C+A2C joint 的端到端 Qwen2.5-VL LoRA 对比。
+- 执行命令：model/qwen/e2e_lora/train.py --config model/qwen/e2e_lora/config.yaml --device cuda
+- 关键参数：seed=42, frames=16, size=224, lora_r=8, lr_lora=5e-05, lr_head=0.001
+- 输入：/home/mzhao/ECHO-MIMIC-IV/data/A4C/classification.csv; /home/mzhao/ECHO-MIMIC-IV/data/A2C/classification.csv
+- 输出：/home/mzhao/ECHO-MIMIC-IV/out/results/qwen_e2e_lora
+- 结果/指标：
+```
+group   views  best_epoch  test_acc  test_macro_f1  test_macro_auc  test_sensitivity  test_specificity  trainable_params  trainable_ratio  d_acc_vs_A4C  d_f1_vs_A4C  d_auc_vs_A4C  d_acc_vs_A2C  d_f1_vs_A2C  d_auc_vs_A2C
+    A4C     A4C           2  0.615523       0.610805        0.633392          0.509091          0.720430          16151810         0.004283      0.000000     0.000000      0.000000     -0.021661    -0.025753     -0.051144
+    A2C     A2C           2  0.637184       0.636558        0.684536          0.600000          0.673835          16151810         0.004283      0.021661     0.025753      0.051144      0.000000     0.000000      0.000000
+A4C+A2C A4C+A2C           2  0.611913       0.609981        0.676377          0.545455          0.677419          16151810         0.004283     -0.003610    -0.000824      0.042985     -0.025271    -0.026577     -0.008159
+```
+- 结论与备注：单/双视角对比见 comparison 表；所有组共享样本、划分、prompt 与 LoRA 配置。

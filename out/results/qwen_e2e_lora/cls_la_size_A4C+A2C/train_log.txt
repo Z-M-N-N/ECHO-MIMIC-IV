@@ -1,0 +1,4 @@
+best_epoch=2 best_val_macro_f1=0.6111373115657726
+ train_loss  val_loss  val_macro_f1  val_accuracy       lr
+   0.709207  0.691474      0.528152      0.593466 0.000025
+   0.644421  0.657692      0.611137      0.617060 0.000000

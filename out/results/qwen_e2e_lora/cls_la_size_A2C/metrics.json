@@ -1,0 +1,179 @@
+{
+  "task": "cls_la_size",
+  "views": [
+    "A2C"
+  ],
+  "trainable": {
+    "trainable": 16151810,
+    "total": 3770774786,
+    "ratio": 0.004283419434108839,
+    "lora_modules": 252
+  },
+  "best_epoch": 2,
+  "best_val_macro_f1": 0.6315761320174382,
+  "metrics": {
+    "train": {
+      "per_task": {
+        "cls_la_size": {
+          "n": 1000,
+          "accuracy": 0.667,
+          "macro_f1": 0.6598483107331647,
+          "macro_auc": 0.7245306285285975,
+          "macro_precision": 0.6650987495617623,
+          "macro_recall": 0.6594069739795527,
+          "sensitivity": 0.5711159737417943,
+          "specificity": 0.7476979742173112,
+          "per_class": {
+            "0": {
+              "precision": 0.6744186046511628,
+              "recall": 0.7476979742173112,
+              "f1": 0.7091703056768559,
+              "support": 543
+            },
+            "1": {
+              "precision": 0.6557788944723618,
+              "recall": 0.5711159737417943,
+              "f1": 0.6105263157894737,
+              "support": 457
+            }
+          },
+          "confusion_matrix": [
+            [
+              406,
+              137
+            ],
+            [
+              196,
+              261
+            ]
+          ]
+        }
+      },
+      "macro": {
+        "accuracy": 0.667,
+        "macro_f1": 0.6598483107331647,
+        "macro_auc": 0.7245306285285975,
+        "macro_precision": 0.6650987495617623,
+        "macro_recall": 0.6594069739795527,
+        "n_tasks": 1
+      }
+    },
+    "val": {
+      "per_task": {
+        "cls_la_size": {
+          "n": 551,
+          "accuracy": 0.6370235934664247,
+          "macro_f1": 0.6315761320174382,
+          "macro_auc": 0.664239546234006,
+          "macro_precision": 0.6395018872083091,
+          "macro_recall": 0.6335839598997494,
+          "sensitivity": 0.5338345864661654,
+          "specificity": 0.7333333333333333,
+          "per_class": {
+            "0": {
+              "precision": 0.6276276276276276,
+              "recall": 0.7333333333333333,
+              "f1": 0.6763754045307443,
+              "support": 285
+            },
+            "1": {
+              "precision": 0.6513761467889908,
+              "recall": 0.5338345864661654,
+              "f1": 0.5867768595041323,
+              "support": 266
+            }
+          },
+          "confusion_matrix": [
+            [
+              209,
+              76
+            ],
+            [
+              124,
+              142
+            ]
+          ]
+        }
+      },
+      "macro": {
+        "accuracy": 0.6370235934664247,
+        "macro_f1": 0.6315761320174382,
+        "macro_auc": 0.664239546234006,
+        "macro_precision": 0.6395018872083091,
+        "macro_recall": 0.6335839598997494,
+        "n_tasks": 1
+      }
+    },
+    "test": {
+      "per_task": {
+        "cls_la_size": {
+          "n": 554,
+          "accuracy": 0.6371841155234657,
+          "macro_f1": 0.6365576868470268,
+          "macro_auc": 0.6845356793743891,
+          "macro_precision": 0.6377018666107382,
+          "macro_recall": 0.6369175627240143,
+          "sensitivity": 0.6,
+          "specificity": 0.6738351254480287,
+          "per_class": {
+            "0": {
+              "precision": 0.6308724832214765,
+              "recall": 0.6738351254480287,
+              "f1": 0.6516464471403813,
+              "support": 279
+            },
+            "1": {
+              "precision": 0.64453125,
+              "recall": 0.6,
+              "f1": 0.6214689265536724,
+              "support": 275
+            }
+          },
+          "confusion_matrix": [
+            [
+              188,
+              91
+            ],
+            [
+              110,
+              165
+            ]
+          ]
+        }
+      },
+      "macro": {
+        "accuracy": 0.6371841155234657,
+        "macro_f1": 0.6365576868470268,
+        "macro_auc": 0.6845356793743891,
+        "macro_precision": 0.6377018666107382,
+        "macro_recall": 0.6369175627240143,
+        "n_tasks": 1
+      }
+    }
+  },
+  "frame": {
+    "num_frames": 16,
+    "image_size": 224
+  },
+  "prompt": {
+    "view_names": {
+      "A4C": "A4C 心尖四腔",
+      "A2C": "A2C 心尖两腔"
+    },
+    "question": "请根据视频判断左房大小分级：0=正常，1=增大。只回答 0 或 1。",
+    "anchor_text": "答案："
+  },
+  "git": {
+    "commit": "ba5cd1d4dda27b565dd0184b208546924fb12e92",
+    "dirty": true,
+    "branch": "cls_mult_ete_view"
+  },
+  "environment": {
+    "python": "3.10.22",
+    "torch": "2.5.1+cu124",
+    "cuda_available": true,
+    "cuda_version": "12.4",
+    "gpu_count": 1,
+    "cuda_visible_devices": "3"
+  }
+}

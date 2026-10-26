@@ -1,11 +1,12 @@
-
 ## 一、项目概述
 
-本项目基于 `/home/mzhao/ECHO-MIMIC-IV/data` 中的分类标注数据，使用 **Qwen2.5-VL-3B** 视觉塔（**冻结**）提取超声心动图**多视角视觉特征**，在**特征层面**进行组合融合后训练 MLP 分类头。
+本项目基于 `/home/mzhao/ECHO-MIMIC-IV/data` 中的分类标注数据，使用 **Qwen2.5-VL-3B 端到端多模态前向**：将超声心动图视频（或采样帧）与**任务提示词（prompt）**一同输入模型，取模型**隐空间表征**（LLM 主干在指定 token 位置的 hidden state）作为样本特征，接入 MLP 分类头；训练阶段通过 **LoRA 微调 LLM 主干**（视觉塔是否参与微调由配置决定），MLP 分类头全参数训练。
 
-当前阶段聚焦于**单一分类任务的原型验证**：比较**单视角特征**与**双视角特征融合**的分类性能差异（以 A4C、A2C 单视角为基线，对比 A4C+A2C 融合的效果），验证多视角特征融合是否带来提升。
+当前阶段聚焦于**单一分类任务的原型验证**：比较**单视角输入**与**双视角输入（A4C、A2C）**在端到端 LoRA 微调下的分类性能差异（以 A4C、A2C 单视角为基线，对比 A4C+A2C 融合/联合输入的效果）。
 
-所有代码置于 `/home/mzhao/ECHO-MIMIC-IV/model/qwen/linear_probe/`（可新建独立子目录如 `qwen/feature_fusion/`），输出（特征、结果、图片）统一保存至 `/home/mzhao/ECHO-MIMIC-IV/out`。
+所有代码置于 `/home/mzhao/ECHO-MIMIC-IV/model/qwen/`（建议新建独立子目录如 `qwen/e2e_lora/`），输出（结果、图片、LoRA 权重、日志）统一保存至 `/home/mzhao/ECHO-MIMIC-IV/out`。
+
+> 说明：本阶段**不再**采用"视觉塔冻结 + 特征一次性缓存"的方案；端到端前向是训练循环的一部分。若为加速仍希望缓存视觉侧 embedding，需在文档中明确其与端到端训练的差异及对结论的影响（默认不缓存，保证端到端一致性）。
 
 ---
 
@@ -17,21 +18,32 @@
   - 先解析 CSV，明确**当前选定分类任务**的目标列、类别集合、样本 ID，以及**各视角字段**（A4C、A2C 的视频/图像路径列）。
   - 统计该任务类别分布，识别并处理类别不平衡（class weight / 重采样 / focal loss）。
   - **按样本 ID 划分**训练/验证/测试集（固定随机种子、分层抽样），并保证**单视角与双视角实验使用完全相同的划分**，确保对比公平。
-  - 确认该任务类别数，作为分类头输出维度依据。
-  - **双视角样本对齐规则**：明确当某样本缺少某一视角时的处理策略（如仅保留两视角齐全的样本，或对缺失视角做零向量/掩码占位），并在文档中记录；单视角实验则各自使用该视角可用的样本（需说明样本集合差异对对比的影响，或统一采用两视角齐全的子集以保证严格可比）。
+  - 确认该任务类别数，作为 MLP 分类头输出维度依据。
+  - **双视角样本对齐规则**：明确当某样本缺少某一视角时的处理策略（如仅保留两视角齐全的样本，或对缺失视角做占位/掩码并在 prompt 中声明），并在文档中记录；单视角实验则各自使用该视角可用的样本（需说明样本集合差异对对比的影响，或统一采用两视角齐全的子集以保证严格可比）。
 
 ---
 
-## 三、模型与权重
+## 三、模型与训练策略
 
-### Qwen2.5-VL-3B（冻结视觉塔 + 特征级融合）
+### Qwen2.5-VL-3B（端到端前向 + LoRA 微调 + MLP 分类头）
+
 - **模型路径**：`/mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B`
-- **使用约束**：仅使用**视觉塔（Vision Tower）**，不加载/不使用语言模型部分；视觉塔参数**全部冻结**，不做任何微调。
-- **特征提取**：
-  - 每个视角（A4C、A2C）分别前向视觉塔，得到 pooled embedding。
-  - 特征**一次性提取并缓存**至 `out/features/`，训练阶段直接读取，不重复前向。
-- **特征级融合**：在缓存特征层面实现并在配置中可选：`concat`（拼接）、`mean`（均值池化）、`attention`（注意力加权融合）；单视角实验即为该视角特征直接送入 MLP。
-- **训练部分**：仅训练 MLP 分类头（多视角融合时含融合模块）。
+- **端到端前向**：
+  - 输入 = 任务提示词（文本）+ 视频/采样帧（视觉）+ 视角标识（A4C / A2C / 双视角）。
+  - 提示词需在 `config.yaml` 中可配置模板，明确任务语义（如"这是一段超声心动图 A4C 视角视频，请判断其 <任务名> 类别"），并在末尾放置**表征提取锚点**（如最后一个 token 或专用占位 token），统一从该位置取 hidden state。
+- **隐空间表征提取**：
+  - 取 LLM 主干**最后一层**（或配置指定层）在锚点位置的 hidden state 作为样本表征向量，维度 = LLM hidden size。
+  - 提取层号、锚点位置策略、是否做 mean-pooling 均在 `config.yaml` 中可配置并记录。
+- **LoRA 微调**：
+  - 在 LLM 主干的注意力/FFN 线性层注入 LoRA（rank、alpha、dropout、target_modules 可配置）；**视觉塔默认冻结**（若配置允许解冻，需记录并说明显存与稳定性影响）。
+  - 仅 LoRA 参数 + MLP 分类头可训练；其余参数冻结。
+  - 需记录可训练参数量与总参数量占比。
+- **MLP 分类头**：至少两层全连接 + 激活 + Dropout，输入维度 = LLM hidden size（双视角为融合后维度），输出维度 = 该任务类别数。
+- **双视角处理**（端到端方案下的两种可选实现，配置中指定）：
+  1. **联合输入（joint）**：将 A4C 与 A2C 帧按视角标记组织进同一次前向（如两段视觉输入 + 视角分隔提示），从锚点取一次表征；
+  2. **表征级融合（late fusion）**：两视角分别前向取表征，再在表征层做 `concat` / `mean` / `attention` 融合后送入 MLP。
+  - 单视角实验即为该视角单独前向取表征送入 MLP。
+  - 需在文档中记录所选方案与输入组织方式。
 
 ---
 
@@ -43,73 +55,93 @@
 │   └── classification.csv
 ├── model/
 │   └── qwen/
-│       └── feature_fusion/       # 冻结视觉塔 + 特征级融合 + MLP
-│           ├── extract_features.py   # 分别提取 A4C / A2C 特征并缓存
-│           ├── train.py              # 读取缓存特征，训练单/双视角 MLP
-│           ├── dataset.py            # 加载缓存特征、构建单/多视角样本
-│           ├── model.py              # 融合模块 + MLP 分类头
-│           └── config.yaml           # 视角组合、融合策略、训练超参
+│       └── e2e_lora/                 # 端到端 Qwen2.5-VL + LoRA + MLP
+│           ├── dataset.py            # 加载视频/帧、构造 prompt、单/双视角样本
+│           ├── model.py              # Qwen2.5-VL 封装 + 表征提取 + 融合 + MLP
+│           ├── lora_utils.py         # LoRA 注入与可训练参数统计（可选拆分）
+│           ├── train.py              # 端到端训练/验证/测试、早停、指标与作图
+│           ├── evaluate.py           # 加载 LoRA 权重 + MLP，测试集评估（可选）
+│           └── config.yaml           # 视角组合、prompt 模板、表征层/锚点、LoRA、融合、训练超参
 └── out/
-    ├── features/
-    │   └── qwen_feature_fusion/
-    │       ├── A4C/                  # 特征文件（含样本 ID 与标签映射）
-    │       └── A2C/
     ├── results/
-    │   └── qwen_feature_fusion/
+    │   └── qwen_e2e_lora/
     │       ├── <task>_A4C/
     │       ├── <task>_A2C/
     │       └── <task>_A4C+A2C/
-    └── figures/
-        └── qwen_feature_fusion/
-            ├── <task>_A4C/
+    ├── figures/
+    │   └── qwen_e2e_lora/
+    │       ├── <task>_A4C/
+    │       ├── <task>_A2C/
+    │       └── <task>_A4C+A2C/
+    └── checkpoints/
+        └── qwen_e2e_lora/
+            ├── <task>_A4C/         # LoRA adapter + MLP 权重（best）
             ├── <task>_A2C/
             └── <task>_A4C+A2C/
 ```
 
 ---
 
-## 五、具体要求
+## 五、项目清理与精简
 
-### 通用要求
-1. **输入处理**：视频帧采样策略（帧数、分辨率）在 `config.yaml` 中可配置；**视角组合方式**（单视角 / 双视角列表）也可配置。
-2. **特征缓存**：`extract_features.py` 按视角分别提取并保存特征（`.npy`/`.pt`），含样本 ID 与标签映射，供后续复用。
-3. **分类头（MLP）**：至少两层全连接 + 激活 + Dropout，输出维度等于该任务类别数。
-4. **特征融合**：实现并在配置中可选：`concat`、`mean`、`attention`；记录所选策略与输入维度。
-5. **训练**：AdamW 优化器、交叉熵损失（支持 class weight / focal loss）、学习率与 batch size 可配置；支持早停（基于验证集 macro-F1 或 accuracy）。
-6. **评估指标**：报告 Accuracy、macro-F1、macro-AUC（二分类另报 Precision/Recall/Sensitivity/Specificity），并输出混淆矩阵。
-7. **可复现**：固定随机种子，将配置文件副本写入对应结果目录。
-8. **对照实验**：在同一任务、同一数据划分下，分别运行：
-   - 基线 1：单视角 A4C 特征
-   - 基线 2：单视角 A2C 特征
-   - 实验组：A4C + A2C 特征融合（至少一种融合策略，建议 concat 为主，其他作补充）
-   并汇总对比表（各指标 + 提升幅度）。
+以**当前选定任务与本项目链路**为准，对现有代码与数据进行清理，保证目录干净、无冗余：
+
+1. **先盘点、后删除**：删除前先列出 `model/qwen/`（含旧的 `linear_probe/`、`feature_fusion/`）与 `out/` 下现有文件，区分"本任务链路所需 / 历史实验遗留 / 完全无关"，形成清单再执行删除。
+2. **代码清理**：移除与本任务无关的旧脚本、旧配置、旧融合/缓存逻辑；同一功能只保留一份实现，避免 `linear_probe` 与 `e2e_lora` 重复代码并存造成混淆。若保留旧方案作参考，需移入明确的 `legacy/` 或 `archive/` 目录并在 README 标注"不参与本任务"。
+3. **数据清理**：只保留 `classification.csv` 及本任务实际引用的视频/图像路径；不删除原始标注数据，但对确认无用的中间产物（旧特征缓存 `.npy/.pt`、旧预测/日志）予以清理。
+4. **输出清理**：`out/` 下只保留本任务三组实验（A4C / A2C / A4C+A2C）的有效产出；旧子项目目录（如 `qwen_feature_fusion/`）若不再使用则删除或归档。
+5. **可追溯**：删除操作记录在 `out/results/qwen_e2e_lora/CLEANUP.md`（列出删除/归档的文件与原因），确保清理可审计、不误删本任务依赖。
+6. **不越界**：不修改、不删除 `data/` 下的原始标注文件与模型权重目录 `/mnt/disk5/mzhao/公共大模型/Qwen2.5-VL-3B`；清理范围限于项目代码与 `out/` 产出。
 
 ---
 
-## 六、输出规范
+## 六、具体要求
 
-所有产出统一放在 `/home/mzhao/ECHO-MIMIC-IV/out`，按 `features / results / figures` 三大类，再按子项目与实验组分子目录：
+### 通用要求
+1. **输入处理**：视频帧采样策略（帧数、分辨率）在 `config.yaml` 中可配置；**任务提示词模板**、**视角组合方式**（单视角 / 双视角及联合或晚期融合）也可配置。
+2. **表征提取**：明确并实现从 LLM 隐空间取表征的逻辑（层号、锚点 token 位置、pooling 方式），在配置中可调，并在结果中记录。
+3. **LoRA 配置**：rank、alpha、dropout、target_modules、是否解冻视觉塔均需可配置；训练开始时打印/记录可训练参数量及占比。
+4. **MLP 分类头**：至少两层全连接 + 激活 + Dropout，输出维度等于该任务类别数。
+5. **双视角融合**：实现并在配置中可选 `joint`（联合输入）与 `concat` / `mean` / `attention`（表征级融合）；记录所选策略与输入维度。
+6. **训练**：AdamW 优化器（可为 LoRA 与 MLP 设不同学习率）、交叉熵损失（支持 class weight / focal loss）、学习率与 batch size 可配置；支持早停（基于验证集 macro-F1 或 accuracy）；支持梯度累积/混合精度以适配显存。
+7. **评估指标**：报告 Accuracy、macro-F1、macro-AUC（二分类另报 Precision/Recall/Sensitivity/Specificity），并输出混淆矩阵。
+8. **可复现**：固定随机种子，将配置文件副本写入对应结果目录；记录环境与关键超参。
+9. **对照实验**：在同一任务、同一数据划分、同一 prompt 模板与 LoRA 配置下，分别运行：
+   - 基线 1：单视角 A4C 输入
+   - 基线 2：单视角 A2C 输入
+   - 实验组：A4C + A2C（联合输入或表征级融合，至少一种，建议以联合输入为主、表征级融合作补充）
+   并汇总对比表（各指标 + 提升幅度）。
+10. **效率与显存**：说明端到端训练的相对开销（相比冻结特征方案），记录单卡显存占用与单 epoch 耗时；若采用梯度累积/混合精度/冻结视觉塔等手段，需在文档中说明。
 
-- `out/features/qwen_feature_fusion/A4C/`、`.../A2C/`：特征文件（含样本 ID 与标签映射）。
-- `out/results/qwen_feature_fusion/<task>_<view_combo>/`：
-  - `metrics.json`（Accuracy / macro-F1 / macro-AUC 等）
+---
+
+## 七、输出规范
+
+所有产出统一放在 `/home/mzhao/ECHO-MIMIC-IV/out`，按 `results / figures / checkpoints` 三大类，再按子项目与实验组分子目录：
+
+- `out/results/qwen_e2e_lora/<task>_<view_combo>/`：
+  - `metrics.json`（Accuracy / macro-F1 / macro-AUC 等，含可训练参数量与训练耗时）
   - `predictions.csv`（样本 ID、真实标签、预测类别、各类概率）
   - `config.yaml` 副本
-- `out/figures/qwen_feature_fusion/<task>_<view_combo>/`：
+  - `train_log.txt`（loss/指标曲线数值、早停信息）
+- `out/figures/qwen_e2e_lora/<task>_<view_combo>/`：
   - `loss_curve.png`
   - `confusion_matrix_<task>.png`
   - `roc_curve_<task>.png`
   - 预测分布图
-- `out/results/qwen_feature_fusion/comparison_<task>.csv`（或 `.md`）：单视角 vs 双视角融合指标对比汇总表，含提升幅度。
+- `out/checkpoints/qwen_e2e_lora/<task>_<view_combo>/`：
+  - LoRA adapter 权重（best）与 MLP 分类头权重（best），便于复现与复用
+- `out/results/qwen_e2e_lora/comparison_<task>.csv`（或 `.md`）：单视角 vs 双视角指标对比汇总表，含提升幅度。
+- `out/results/qwen_e2e_lora/CLEANUP.md`：项目清理记录（删除/归档文件与原因）。
 
 ---
 
-## 七、验收标准
+## 八、验收标准
 
-1. 子项目可独立运行：先 `python extract_features.py --config config.yaml` 提取并缓存 A4C/A2C 特征，再 `python train.py --config config.yaml` 训练。
-2. 缓存特征成功保存且训练阶段可复用，不重复前向视觉塔。
-3. 选定任务上，完成 A4C 单视角、A2C 单视角、A4C+A2C 融合三组实验，均输出 Accuracy、macro-F1、macro-AUC 及混淆矩阵。
-4. 生成单视角 vs 双视角特征融合的对比汇总，明确给出融合相对单视角的提升（或未提升）结论。
-5. 三组实验使用相同数据划分与随机种子，结果可复现。
-6. 输出目录结构符合第六节规范。
-
+1. 子项目可独立运行：`python train.py --config config.yaml` 即完成端到端 LoRA 微调 + MLP 训练（可选 `evaluate.py` 单独复评）。
+2. 端到端前向链路正确：视频/帧 + prompt 输入 Qwen2.5-VL，从指定锚点取出隐空间表征并送入 MLP；LoRA 仅注入指定模块，视觉塔默认冻结，可训练参数量有记录。
+3. 选定任务上，完成 A4C 单视角、A2C 单视角、A4C+A2C 三组实验，均输出 Accuracy、macro-F1、macro-AUC 及混淆矩阵。
+4. 生成单视角 vs 双视角的对比汇总，明确给出双视角相对单视角的提升（或未提升）结论。
+5. 三组实验使用相同数据划分、随机种子、prompt 模板与 LoRA 配置，结果可复现；best LoRA + MLP 权重已保存。
+6. 输出目录结构符合第七节规范。
+7. 项目目录已清理：无冗余/无关代码与产出，清理记录见 `CLEANUP.md`，本任务链路可独立跑通。

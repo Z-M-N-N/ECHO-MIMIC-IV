@@ -1,39 +1,32 @@
-# ECHO-MIMIC-IV — Qwen 多视角特征融合分类原型
+# ECHO-MIMIC-IV — Qwen2.5-VL 端到端 LoRA 分类原型
 
-本阶段按 `task.txt` 重构为 **Qwen2.5-VL-3B 视觉塔（冻结）+ 特征级融合 + MLP**：
+当前阶段按 `task.txt` 使用 **Qwen2.5-VL-3B 端到端前向**：
 
-- 视角：**A4C**（心尖四腔）与 **A2C**（心尖两腔）
-- 任务：`cls_la_size`（左房大小分级，二分类；可在 config 切换 `cls_rv_function` / `cls_ra_size`）
-- 对照：A4C 单视角、A2C 单视角、A4C+A2C 融合（`concat` / `mean` / `attention`）
-- 视觉塔只加载 `visual.*`（390 个张量，约 0.67B），**不加载语言模型、不微调**
+- 输入：超声视频采样帧（16 帧 @224×224）+ 任务 prompt + 视角标识
+- 表征：LLM 第 9 层、视觉 token 的 mean-pooled hidden state（2048 维）
+- 训练：LLM LoRA（q/k/v/o + gate/up/down，r=8/alpha=16）+ 全参数 MLP 分类头
+- 视觉塔冻结；任务：`cls_la_size`
+- 对照：A4C 单视角 / A2C 单视角 / A4C+A2C joint（两段视频一次前向）
 
-## 数据与对齐
+## 数据
 
-- `data/A4C/classification.csv`：6766 studies，含标签 `cls_rv_function` / `cls_la_size` / `cls_ra_size`
-- `data/A2C/classification.csv`：6566 studies，**没有分类标签**
-- 标签按 `study_id` 从 A4C 传给 A2C；为保证严格可比：
-  - 只保留 **A4C、A2C 都存在** 且 **当前任务标签非空** 的 study；
-  - 三组实验使用完全相同的样本、划分与 seed；
-  - A4C/A2C 的 `split` 已核对完全一致。
-- 默认任务 `cls_la_size` 对齐后：**5424** samples（train 4319 / val 551 / test 554，类别约 53/47%）。
+- `data/A4C/classification.csv`、`data/A2C/classification.csv`
+- A2C 无分类标签，按 `study_id` 从 A4C 关联；严格保留双视角齐全且标签非空的 study
+- 对齐后 5424 条（train 4319 / val 551 / test 554）
 
-## 目录
+## 结构
 
 ```text
-model/qwen/feature_fusion/
-├── extract_features.py   # 按视角提取 Qwen 视觉特征并缓存
-├── train.py              # 读取缓存特征，训练单/双视角 MLP 并输出对比
-├── dataset.py            # CSV 对齐、缓存读取、Dataset/Collate
-├── model.py              # single / concat / mean / attention 融合 + MLP
-├── make_overall_figure.py # 跨任务总览图（读 comparison_*.csv）
+model/qwen/e2e_lora/
+├── dataset.py       # CSV 对齐、视频解码、单/双视角样本
+├── model.py         # Qwen2.5-VL + LoRA + 表征提取 + MLP
+├── lora_utils.py    # LoRA 注入/保存/可训练参数统计
+├── train.py         # 三组端到端训练、早停、评估、作图
 └── config.yaml
 
-out/features/qwen_feature_fusion/{A4C,A2C}/<tag>.npz
-out/results/qwen_feature_fusion/<task>_<group>/{metrics.json,predictions.csv,config.yaml,...}
-out/figures/qwen_feature_fusion/<task>/<group>/{loss_curve,confusion_matrix_<task>,roc_curve_<task>,pred_dist_<task>}
-out/figures/qwen_feature_fusion/overall_comparison.{png,pdf,csv,md}   # 跨任务总览
-out/figures/qwen_feature_fusion/overall_comparison_heatmap.{png,pdf}
-out/results/qwen_feature_fusion/comparison_<task>.csv/.md
+out/results/qwen_e2e_lora/<task>_<group>/{metrics.json,predictions.csv,config.yaml,train_log.txt}
+out/figures/qwen_e2e_lora/<task>_<group>/{loss_curve,confusion_matrix,roc_curve,pred_dist}
+out/checkpoints/qwen_e2e_lora/<task>_<group>/{lora_adapter.pt,mlp_head.pt,lora_config.json}
 ```
 
 ## 运行
@@ -41,53 +34,27 @@ out/results/qwen_feature_fusion/comparison_<task>.csv/.md
 ```bash
 source /home/mzhao/miniconda3/etc/profile.d/conda.sh && conda activate Qwen_back
 cd /home/mzhao/ECHO-MIMIC-IV
-
-# 1) 特征提取（A4C + A2C；只需一次）
-CUDA_VISIBLE_DEVICES=<卡号> python -u model/qwen/feature_fusion/extract_features.py \
-  --config model/qwen/feature_fusion/config.yaml --view all --device cuda
-
-# 2) 训练三组/五组对照
-CUDA_VISIBLE_DEVICES=<卡号> python -u model/qwen/feature_fusion/train.py \
-  --config model/qwen/feature_fusion/config.yaml --device cuda
+CUDA_VISIBLE_DEVICES=3 python -u model/qwen/e2e_lora/train.py \
+  --config model/qwen/e2e_lora/config.yaml --device cuda
 ```
 
-- `--view A4C|A2C|all`、`--overwrite`、`--max-videos N`（调试）
-- `train.py --groups A4C,A2C,A4C+A2C` 可只跑指定组
-- `task: cls_rv_function|cls_la_size|cls_ra_size` 可切换任务（同一套视图对齐逻辑）
+可选：`--task cls_rv_function`、`--groups A4C,A2C`、`--max-train-samples N`（调试）。
 
-## 特征与融合
+## 关键配置
 
-- 每视角 16 帧 @224 → Qwen 视觉塔 → mean-pooled **2048-D** 特征，缓存为 float16。
-- 训练前按 **train split 的均值/方差** 对每个视角做 z-score（统计量存 `feature_stats.json`）。
-- 融合：
-  - `concat`：4096-D 拼接；
-  - `mean`：两视角均值；
-  - `attention`：逐视角打分 + softmax 加权（可学习）。
-- MLP：LayerNorm → 512 → 256 → 2，GELU + Dropout(0.2)。
-- AdamW + cosine，class weight balanced，早停 val macro-F1（patience 25），固定 seed。
+- 帧：16 @ 224×224；prompt 模板与锚点文本在 `config.yaml`
+- 表征：`representation.layer=9`（-1/最后层在诊断中几乎不可分）；`pooling=visual_mean`
+- LoRA：r=8, alpha=16, dropout=0.05, 252 个模块；可训练 16.15M / 3.77B = 0.43%
+- 训练：bs2、grad_accum 8→4、lr_lora 5e-5、lr_head 1e-3、2 epochs、早停 val macro-F1
+- 未使用梯度检查点（实测约 1.6x 加速，显存约 16GB）
 
-## 评估
+## 当前结果（cls_la_size, test）
 
-- Accuracy、macro-F1、macro-AUC（OVR），二分类另报 Precision/Recall、Sensitivity/Specificity；
-- 混淆矩阵、ROC、预测分布图；
-- `comparison_<task>.csv` 汇总各组指标，并给出相对 A4C / A2C 的 ΔAcc、ΔF1、ΔAUC。
+| 组 | Acc | macro-F1 | macro-AUC |
+|---|---:|---:|---:|
+| A4C | 0.6155 | 0.6108 | 0.6334 |
+| A2C | **0.6372** | **0.6366** | **0.6845** |
+| A4C+A2C joint | 0.6119 | 0.6100 | 0.6764 |
 
-## 图表组织
-
-- 每个实验组的图放在 `out/figures/qwen_feature_fusion/<task>/<group>/`；
-- 跨任务总览由 `make_overall_figure.py` 生成：
-
-```bash
-python model/qwen/feature_fusion/make_overall_figure.py
-```
-
-输出：
-- `overall_comparison.png/.pdf`：Acc / macro-F1 / macro-AUC 三面板分组柱状图；
-- `overall_comparison_heatmap.png/.pdf`：task × group 的 F1/AUC 热力图；
-- `overall_comparison.csv/.md`：汇总表。
-
-## 说明
-
-- 旧的 VideoMAE / Qwen LoRA / 多任务 linear_probe 代码与产物已归档到
-  `/tmp/echo_logs/archive_mimic_multitask_2026-10-25/`，当前 `out/` 只保留本原型结构。
-- `data/` 下所有视角数据与原始 CSV 全部保留。
+> 端到端 LoRA 在当前 2 epoch 设置下低于上一阶段冻结特征融合（macro-F1 0.65–0.69），
+> 训练 loss 仍在下降，属于欠训练；详见 `EXPERIMENT_LOG.md` 与 `CLEANUP.md`。
